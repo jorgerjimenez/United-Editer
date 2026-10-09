@@ -215,6 +215,19 @@ pub enum ImportWarningCode {
     UnmappedXmp,
 }
 
+/// The saved Lightroom Upright mode associated with a foreign geometry transform.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportUprightMode {
+    Off,
+    Auto,
+    Level,
+    Vertical,
+    Full,
+    Guided,
+    Unknown,
+}
+
 /// One actionable XMP import diagnostic. `path` is filled when its photo is committed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -223,6 +236,8 @@ pub struct ImportWarning {
     pub code: ImportWarningCode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ImportUprightMode>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<String>,
 }

@@ -170,6 +170,7 @@ fn foreign_crs_sidecar_on_import_and_read_from_file() {
     std::fs::remove_file(src.join("harbour.xmp")).unwrap();
     let r = s.execute("photo.readMetadataFromFile", &json!({})).unwrap();
     assert_eq!(r["failed"].as_array().unwrap().len(), 1);
+    assert!(r.get("warnings").is_none(), "{r}");
     let _ = std::fs::remove_dir_all(&src);
 }
 
@@ -195,11 +196,42 @@ fn foreign_profile_and_upright_import_diagnostics_are_actionable() {
     let r = s.execute("library.import", &json!({"paths": [photo.to_string_lossy()]})).unwrap();
     let warnings = r["warnings"].as_array().unwrap();
     assert!(warnings.iter().any(|w| w["code"] == "cameraProfile" && w["profile"] == "Camera Faithful"), "{r}");
-    assert!(warnings.iter().any(|w| w["code"] == "uprightGeometry"), "{r}");
-    let p = s.catalog.photos().next().unwrap();
+    assert!(warnings.iter().any(|w| w["code"] == "uprightGeometry" && w["mode"] == "auto"), "{r}");
+    let p = s.catalog.photos().next().unwrap().clone();
     assert_eq!(p.develop.profile.id, "lc.color");
     assert_eq!(p.develop.light.exposure, 1.68);
     assert_eq!(std::fs::read(&sidecar).unwrap(), before, "import never rewrites foreign XMP");
+
+    // Metadata reread carries same structured diagnostics, with each saved Upright mode typed.
+    let photo_path = photo.to_string_lossy().to_string();
+    let reread = s.execute("photo.readMetadataFromFile", &json!({"ids": [p.id.0]})).unwrap();
+    assert!(
+        reread["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["code"] == "cameraProfile" && w["profile"] == "Camera Faithful" && w["path"] == photo_path),
+        "{reread}"
+    );
+    assert!(reread["warnings"].as_array().unwrap().iter().any(|w| w["code"] == "uprightGeometry" && w["mode"] == "auto"), "{reread}");
+    for (source, mode) in [("0", "off"), ("2", "level"), ("3", "vertical"), ("4", "full"), ("5", "guided"), ("9", "unknown")] {
+        let mode_xmp = xmp.replace("crs:PerspectiveUpright=\"1\"", &format!("crs:PerspectiveUpright=\"{source}\""));
+        std::fs::write(&sidecar, mode_xmp).unwrap();
+        let reread = s.execute("photo.readMetadataFromFile", &json!({"ids": [p.id.0]})).unwrap();
+        assert!(reread["warnings"].as_array().unwrap().iter().any(|w| w["code"] == "uprightGeometry" && w["mode"] == mode), "{source}: {reread}");
+    }
+
+    // A foreign name colliding with a built-in profile label remains warning metadata only.
+    let collision = src.join("collision.png");
+    write_png(&collision, 8);
+    std::fs::write(src.join("collision.xmp"), xmp.replace("Camera Faithful", "Color")).unwrap();
+    let collision_report = s.execute("library.import", &json!({"paths": [collision.to_string_lossy()]})).unwrap();
+    assert!(
+        collision_report["warnings"].as_array().unwrap().iter().any(|w| w["code"] == "cameraProfile" && w["profile"] == "Color"),
+        "{collision_report}"
+    );
+    let collision_photo = s.catalog.photos().find(|photo| photo.file_name == "collision.png").unwrap();
+    assert_eq!(collision_photo.develop.profile.id, "lc.color");
 
     // A second import still diagnoses the untouched foreign packet, while an XMP-free photo does not.
     drop(s);

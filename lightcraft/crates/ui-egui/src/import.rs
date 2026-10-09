@@ -8,7 +8,9 @@
 //! catalog between frames, with a progress window and Cancel; the whole import is one undo step.
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
-use lightcraft_engine::import::{ImportCandidate, ImportWarning, ImportWarningCode, ScanInput, ScanOutput, ScanProgress, scan_with};
+use lightcraft_engine::import::{
+    ImportCandidate, ImportUprightMode, ImportWarning, ImportWarningCode, ScanInput, ScanOutput, ScanProgress, scan_with,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
@@ -718,9 +720,39 @@ fn xmp_warning_text(warning: &ImportWarning) -> String {
             profile = warning.profile.as_deref().unwrap_or_default(),
             path = path,
         ),
-        ImportWarningCode::UprightGeometry => {
-            crate::i18n::tr_format!("Lightroom geometry was not preserved for {path}; Upright will be recalculated.", path = path,)
-        }
+        ImportWarningCode::UprightGeometry => match warning.mode.unwrap_or(ImportUprightMode::Unknown) {
+            ImportUprightMode::Off => crate::i18n::tr_format!(
+                "Lightroom geometry for {path} was not preserved; saved transform is ignored because Upright is Off.",
+                path = path,
+            ),
+            ImportUprightMode::Guided => crate::i18n::tr_format!(
+                "Lightroom geometry for {path} was not preserved; Guided Upright saved transform is unsupported.",
+                path = path,
+            ),
+            ImportUprightMode::Auto => crate::i18n::tr_format!(
+                "Lightroom geometry was not preserved for {path}; {mode} will be recalculated.",
+                path = path,
+                mode = crate::i18n::tr("Auto")
+            ),
+            ImportUprightMode::Level => crate::i18n::tr_format!(
+                "Lightroom geometry was not preserved for {path}; {mode} will be recalculated.",
+                path = path,
+                mode = crate::i18n::tr("Level")
+            ),
+            ImportUprightMode::Vertical => crate::i18n::tr_format!(
+                "Lightroom geometry was not preserved for {path}; {mode} will be recalculated.",
+                path = path,
+                mode = crate::i18n::tr("Vertical")
+            ),
+            ImportUprightMode::Full => crate::i18n::tr_format!(
+                "Lightroom geometry was not preserved for {path}; {mode} will be recalculated.",
+                path = path,
+                mode = crate::i18n::tr("Full")
+            ),
+            ImportUprightMode::Unknown => {
+                crate::i18n::tr_format!("Lightroom geometry for {path} was not preserved; saved Upright transform is unsupported.", path = path,)
+            }
+        },
         ImportWarningCode::UnmappedXmp => {
             crate::i18n::tr_format!("XMP adjustments were not imported for {path}: {fields}.", path = path, fields = warning.fields.join(", "),)
         }
