@@ -1572,6 +1572,34 @@ mod tests {
         assert!(ids(&mut h, "notice:previewOnly:").is_empty());
     }
 
+    #[test]
+    fn crop_remembers_last_aspect_across_photos() {
+        let mut h = demo([1200.0, 800.0]);
+        let photos = h.app.session.visible_cloned();
+        h.app.ui.right = crate::state::RightPanel::Crop;
+        h.app.run("crop.aspect", json!({"aspect": "original"})).unwrap();
+        let saved = serde_json::to_value(&h.app.ui).unwrap();
+        assert_eq!(saved["cropDefaultAspect"], "original");
+        for &photo in &photos[1..3] {
+            h.app.run("library.select", json!({"ids": [photo.0]})).unwrap();
+            h.app.apply_crop_default();
+            let p = h.app.session.catalog.photo(photo).unwrap();
+            assert_eq!(p.develop.crop.aspect, Some((p.width * 100, p.height * 100)));
+        }
+        h.app.run("crop.aspect", json!({"aspect": "1x1"})).unwrap();
+        let existing = h.app.session.develop_of(photos[2]).unwrap().crop;
+        h.app.run("library.select", json!({"ids": [photos[3].0]})).unwrap();
+        h.app.apply_crop_default();
+        assert_eq!(h.app.session.develop_of(photos[3]).unwrap().crop.aspect, Some((100, 100)));
+        h.app.run("crop.aspect", json!({"aspect": "free"})).unwrap();
+        h.app.run("library.select", json!({"ids": [photos[2].0]})).unwrap();
+        h.app.apply_crop_default();
+        assert_eq!(h.app.session.develop_of(photos[2]).unwrap().crop, existing);
+        h.app.ui = serde_json::from_value(saved).unwrap();
+        assert_eq!(h.app.ui.crop_default_aspect, Some(json!("original")));
+        h.settle(SETTLE);
+    }
+
     /// While cropping: O cycles the guides, ⇧O mirrors them, A locks / unlocks the aspect.
     #[test]
     fn crop_keys() {

@@ -349,6 +349,17 @@ impl LightcraftApp {
             return r;
         }
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
+        if r.is_ok() && matches!(id, "crop.aspect" | "crop.rotateAspect") {
+            self.ui.crop_default_aspect = if id == "crop.aspect" && params.get("aspect").and_then(Value::as_str) == Some("original") {
+                Some(serde_json::json!("original"))
+            } else {
+                self.session
+                    .active()
+                    .and_then(|photo| self.session.develop_of(photo))
+                    .map(|d| d.crop.aspect.map_or(serde_json::json!("free"), |(w, h)| serde_json::json!([w as f64 / 100.0, h as f64 / 100.0])))
+            };
+            self.ui.crop_default_photo = self.session.active();
+        }
         if r.is_ok() && id == "photo.label" {
             let label = params.get("label").and_then(Value::as_str).and_then(lightcraft_catalog::ColorLabel::parse);
             let text = match label {
@@ -376,6 +387,27 @@ impl LightcraftApp {
             Ok(_) => {}
         }
         r
+    }
+
+    /// Initialize the crop tool on untouched photos without replacing existing crops.
+    pub(crate) fn apply_crop_default(&mut self) {
+        if self.ui.right != state::RightPanel::Crop {
+            self.ui.crop_default_photo = None;
+            return;
+        }
+        let photo = self.session.active();
+        if self.ui.crop_default_photo == photo {
+            return;
+        }
+        self.ui.crop_default_photo = photo;
+        if let Some(photo) = photo
+            && self.session.develop_of(photo).is_some_and(|d| d.crop == lightcraft_develop::Crop::default())
+            && let Some(aspect) = self.ui.crop_default_aspect.clone()
+            && aspect != serde_json::json!("free")
+            && let Err(e) = self.session.execute("crop.aspect", &serde_json::json!({"aspect": aspect}))
+        {
+            self.ui.status = e.to_string();
+        }
     }
 
     /// Show a transient toast at the bottom of the canvas (like the reference app's HUD).
@@ -695,6 +727,7 @@ impl LightcraftApp {
     }
 
     fn logic_inner(&mut self, ctx: &egui::Context) {
+        self.apply_crop_default();
         if !self.styled {
             theme::install_fonts_with_chinese(ctx, self.chinese_font.as_ref());
             theme::apply(ctx);

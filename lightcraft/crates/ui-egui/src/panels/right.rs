@@ -129,6 +129,7 @@ fn custom_aspect(app: &mut LightcraftApp, ui: &mut egui::Ui) {
 }
 
 fn crop(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
+    app.apply_crop_default();
     let d = app.session.develop_of(id).unwrap_or_default();
     header(ui, "Crop");
     padded(ui, |ui| {
