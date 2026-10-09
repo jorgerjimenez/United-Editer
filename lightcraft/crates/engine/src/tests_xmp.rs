@@ -194,15 +194,10 @@ fn foreign_profile_and_upright_import_diagnostics_are_actionable() {
     let mut s = Session::new().with_fs();
     let r = s.execute("library.import", &json!({"paths": [photo.to_string_lossy()]})).unwrap();
     let warnings = r["warnings"].as_array().unwrap();
-    assert!(warnings.iter().any(|w| w.as_str().is_some_and(|w| w.contains("Camera Faithful could not be applied"))), "{r}");
-    assert!(
-        warnings
-            .iter()
-            .any(|w| w.as_str().is_some_and(|w| w.contains("Lightroom geometry was not preserved") && w.contains("Auto will be recalculated"))),
-        "{r}"
-    );
+    assert!(warnings.iter().any(|w| w["code"] == "cameraProfile" && w["profile"] == "Camera Faithful"), "{r}");
+    assert!(warnings.iter().any(|w| w["code"] == "uprightGeometry"), "{r}");
     let p = s.catalog.photos().next().unwrap();
-    assert_eq!(p.develop.profile.id, "Camera Faithful");
+    assert_eq!(p.develop.profile.id, "lc.color");
     assert_eq!(p.develop.light.exposure, 1.68);
     assert_eq!(std::fs::read(&sidecar).unwrap(), before, "import never rewrites foreign XMP");
 

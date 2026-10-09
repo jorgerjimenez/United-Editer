@@ -142,9 +142,9 @@ names are read (e.g. `Exposure2012`, not the older `Exposure`).
 
 Values pass through our control specs, so anything outside our slider ranges gets clamped.
 
-`crs:CameraProfile` is retained as its selected name in the photo's profile settings, but the name carries no
-rendering data and does not select an Adobe profile. Photo import reports that the profile could not be applied and
-colours may differ from Lightroom. Camera profiles and looks (`Look`; we have our own profile set), local adjustments
+`crs:CameraProfile` is retained as its selected name in the photo import warning metadata, while active profile
+settings stay unchanged: the name carries no rendering data and does not select an Adobe profile. Photo import
+reports that the profile could not be applied and colours may differ from Lightroom. Camera profiles and looks (`Look`; we have our own profile set), local adjustments
 (masks, gradients, brushes), spot removal, red eye, lens blur, process-version 2010 field names, and AI features.
 
 ## Local corrections (masks)
