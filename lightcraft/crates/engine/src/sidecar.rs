@@ -104,6 +104,9 @@ pub struct SidecarData {
     /// `xmp:CreateDate` (first found). Used only when the file itself has no capture time.
     pub captured: Option<String>,
     pub develop: Option<DevelopPatch>,
+    /// Actionable diagnostics for foreign develop settings that were not fully carried over.
+    /// These are surfaced in the photo import report and never persisted in the catalog.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -162,7 +165,44 @@ pub fn parse_sidecar(xmp: &str, raw: bool) -> std::result::Result<SidecarData, S
     out.develop = match full {
         Some(s) => Some(DevelopPatch::Full(Box::new(s))),
         None if crate::crs::has_adjustments(&d.properties) => {
-            Some(DevelopPatch::Partial(crate::crs::to_partial_report(&d.properties, Some(&d.values), Some(raw), crate::crs_masks::DEFAULT_ASPECT).0))
+            let (mut partial, unmapped) = crate::crs::to_partial_report(&d.properties, Some(&d.values), Some(raw), crate::crs_masks::DEFAULT_ASPECT);
+            let profile = crate::crs::camera_profile_name(&d.properties).map(str::to_string);
+            if let Some(name) = &profile
+                && let Some(profile) = partial.get_mut("profile").and_then(Value::as_object_mut)
+            {
+                // Keep the selected name for inspection and round trips. An unknown id renders
+                // as LightCraft's neutral profile; the warning below makes that limitation clear.
+                profile.insert("id".into(), Value::String(name.clone()));
+            }
+            if let Some(name) = profile {
+                out.warnings.push(format!("{name} could not be applied; colors may differ from Lightroom."));
+            }
+            let upright = crate::crs::has_saved_upright_transform(&d.properties);
+            if upright {
+                let mode = d.properties.get("crs:PerspectiveUpright").and_then(|values| values.first()).map(String::as_str).unwrap_or_default();
+                let mode = match mode {
+                    "1" => "Auto",
+                    "2" => "Level",
+                    "3" => "Vertical",
+                    "4" => "Full",
+                    "5" => "Guided",
+                    _ => "Upright",
+                };
+                out.warnings.push(format!("Lightroom geometry was not preserved; {mode} will be recalculated."));
+            }
+            let other: Vec<&str> = unmapped
+                .iter()
+                .map(String::as_str)
+                .filter(|name| {
+                    *name != "CameraProfile"
+                        && !name.starts_with("UprightTransform_")
+                        && !matches!(*name, "UprightTransformCount" | "UprightCenterNormX" | "UprightCenterNormY" | "UprightVersion")
+                })
+                .collect();
+            if !other.is_empty() {
+                out.warnings.push(format!("XMP adjustments not imported: {}.", other.join(", ")));
+            }
+            Some(DevelopPatch::Partial(partial))
         }
         None => None,
     };
