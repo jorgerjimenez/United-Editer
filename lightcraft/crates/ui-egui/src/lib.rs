@@ -348,6 +348,15 @@ impl LightcraftApp {
         if let Some(r) = menus::run_ui_command(self, id, &params) {
             return r;
         }
+        let params = if id == "crop.aspect"
+            && params.get("aspect").and_then(Value::as_str) == Some("toggle")
+            && self.crop_tool_aspect().is_some()
+            && self.session.active().and_then(|id| self.session.develop_of(id)).is_some_and(|d| d.crop == lightcraft_develop::Crop::default())
+        {
+            serde_json::json!({"aspect": "free"})
+        } else {
+            params
+        };
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         if r.is_ok() && matches!(id, "crop.aspect" | "crop.rotateAspect") {
             self.ui.crop_default_aspect = if id == "crop.aspect" && params.get("aspect").and_then(Value::as_str) == Some("original") {
@@ -358,7 +367,6 @@ impl LightcraftApp {
                     .and_then(|photo| self.session.develop_of(photo))
                     .map(|d| d.crop.aspect.map_or(serde_json::json!("free"), |(w, h)| serde_json::json!([w as f64 / 100.0, h as f64 / 100.0])))
             };
-            self.ui.crop_default_photo = self.session.active();
         }
         if r.is_ok() && id == "photo.label" {
             let label = params.get("label").and_then(Value::as_str).and_then(lightcraft_catalog::ColorLabel::parse);
@@ -389,25 +397,40 @@ impl LightcraftApp {
         r
     }
 
-    /// Initialize the crop tool on untouched photos without replacing existing crops.
-    pub(crate) fn apply_crop_default(&mut self) {
-        if self.ui.right != state::RightPanel::Crop {
-            self.ui.crop_default_photo = None;
-            return;
+    /// The remembered ratio belongs to the tool until the user starts editing the crop.
+    pub(crate) fn crop_tool_aspect(&self) -> Option<(u32, u32)> {
+        let photo = self.session.active()?;
+        let d = self.session.develop_of(photo)?;
+        if d.crop != lightcraft_develop::Crop::default() {
+            return d.crop.aspect;
         }
-        let photo = self.session.active();
-        if self.ui.crop_default_photo == photo {
-            return;
+        match self.ui.crop_default_aspect.as_ref()? {
+            Value::String(s) if s == "original" => {
+                let p = self.session.catalog.photo(photo)?;
+                let (w, h) = (p.width.max(1).saturating_mul(100), p.height.max(1).saturating_mul(100));
+                Some(if d.orientation.swaps_axes() { (h, w) } else { (w, h) })
+            }
+            Value::Array(a) => {
+                let number = |i: usize| {
+                    let v = a.get(i)?.as_f64()? * 100.0;
+                    (v.is_finite() && v >= 1.0 && v <= f64::from(u32::MAX)).then_some(v.round() as u32)
+                };
+                Some((number(0)?, number(1)?))
+            }
+            _ => None,
         }
-        self.ui.crop_default_photo = photo;
-        if let Some(photo) = photo
-            && self.session.develop_of(photo).is_some_and(|d| d.crop == lightcraft_develop::Crop::default())
+    }
+
+    /// Called only after a crop gesture begins, inside its undo transaction.
+    pub(crate) fn begin_crop(&mut self) -> Result<(), String> {
+        if self.session.interaction.is_some()
+            && self.session.active().and_then(|id| self.session.develop_of(id)).is_some_and(|d| d.crop == lightcraft_develop::Crop::default())
             && let Some(aspect) = self.ui.crop_default_aspect.clone()
             && aspect != serde_json::json!("free")
-            && let Err(e) = self.session.execute("crop.aspect", &serde_json::json!({"aspect": aspect}))
         {
-            self.ui.status = e.to_string();
+            self.session.execute("crop.aspect", &serde_json::json!({"aspect": aspect})).map_err(|e| e.to_string())?;
         }
+        Ok(())
     }
 
     /// Show a transient toast at the bottom of the canvas (like the reference app's HUD).
@@ -727,7 +750,6 @@ impl LightcraftApp {
     }
 
     fn logic_inner(&mut self, ctx: &egui::Context) {
-        self.apply_crop_default();
         if !self.styled {
             theme::install_fonts_with_chinese(ctx, self.chinese_font.as_ref());
             theme::apply(ctx);

@@ -323,8 +323,6 @@ pub struct UiState {
     pub crop_overlay: CropOverlay,
     /// Last explicitly chosen aspect, retained across photos and app launches.
     pub crop_default_aspect: Option<serde_json::Value>,
-    #[serde(skip)]
-    pub crop_default_photo: Option<lightcraft_catalog::PhotoId>,
     pub show_filenames: bool,
     /// What the square grid's caption shows: `filename`, `exposure` (shutter · aperture · ISO ·
     /// focal length) or `date`.
@@ -708,7 +706,6 @@ impl Default for UiState {
             mask_pins: true,
             crop_overlay: CropOverlay::Thirds,
             crop_default_aspect: None,
-            crop_default_photo: None,
             crop_overlay_orient: 0,
             show_filenames: true,
             grid_info: "filename".into(),

@@ -1573,31 +1573,46 @@ mod tests {
     }
 
     #[test]
-    fn crop_remembers_last_aspect_across_photos() {
+    fn crop_default_browsing_is_read_only_and_drag_is_one_edit() {
         let mut h = demo([1200.0, 800.0]);
-        let photos = h.app.session.visible_cloned();
+        let photos: Vec<_> = h.app.session.visible_cloned().into_iter().filter(|id| !h.app.session.catalog.photo(*id).unwrap().is_edited()).collect();
+        h.app.run("library.select", json!({"ids": [photos[0].0]})).unwrap();
         h.app.ui.right = crate::state::RightPanel::Crop;
-        h.app.run("crop.aspect", json!({"aspect": "original"})).unwrap();
+        h.app.run("crop.aspect", json!({"aspect": "1x1"})).unwrap();
         let saved = serde_json::to_value(&h.app.ui).unwrap();
-        assert_eq!(saved["cropDefaultAspect"], "original");
         for &photo in &photos[1..3] {
             h.app.run("library.select", json!({"ids": [photo.0]})).unwrap();
-            h.app.apply_crop_default();
-            let p = h.app.session.catalog.photo(photo).unwrap();
-            assert_eq!(p.develop.crop.aspect, Some((p.width * 100, p.height * 100)));
+            let before = h.app.session.catalog.photo(photo).unwrap().clone();
+            let undo = h.app.session.undo.len();
+            h.settle(SETTLE);
+            let after = h.app.session.catalog.photo(photo).unwrap();
+            assert_eq!(after.develop, before.develop);
+            assert_eq!(after.history.len(), before.history.len());
+            assert!(!after.is_edited());
+            assert_eq!(h.app.session.undo.len(), undo);
+            assert_eq!(h.app.crop_tool_aspect(), Some((100, 100)));
         }
-        h.app.run("crop.aspect", json!({"aspect": "1x1"})).unwrap();
-        let existing = h.app.session.develop_of(photos[2]).unwrap().crop;
-        h.app.run("library.select", json!({"ids": [photos[3].0]})).unwrap();
-        h.app.apply_crop_default();
-        assert_eq!(h.app.session.develop_of(photos[3]).unwrap().crop.aspect, Some((100, 100)));
-        h.app.run("crop.aspect", json!({"aspect": "free"})).unwrap();
-        h.app.run("library.select", json!({"ids": [photos[2].0]})).unwrap();
-        h.app.apply_crop_default();
-        assert_eq!(h.app.session.develop_of(photos[2]).unwrap().crop, existing);
+        let photo = photos[2];
+        let before = h.app.session.develop_of(photo).unwrap();
+        let undo = h.app.session.undo.len();
+        h.app.run("develop.beginInteraction", json!({"label": "Crop"})).unwrap();
+        h.app.begin_crop().unwrap();
+        h.app.run("crop.drag", json!({"handle": "bottomRight", "from": [0.8, 0.8], "to": [0.7, 0.7]})).unwrap();
+        h.app.run("develop.endInteraction", json!({})).unwrap();
+        assert_eq!(h.app.session.develop_of(photo).unwrap().crop.aspect, Some((100, 100)));
+        assert_eq!(h.app.session.undo.len(), undo + 1);
+        h.app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(h.app.session.develop_of(photo).unwrap(), before);
         h.app.ui = serde_json::from_value(saved).unwrap();
-        assert_eq!(h.app.ui.crop_default_aspect, Some(json!("original")));
+        assert_eq!(h.app.crop_tool_aspect(), Some((100, 100)));
+        h.app.run("crop.aspect", json!({"aspect": "toggle"})).unwrap();
+        assert_eq!(h.app.ui.crop_default_aspect, Some(json!("free")));
+        assert_eq!(h.app.session.develop_of(photo).unwrap(), before);
+        h.app.ui.crop_default_aspect = Some(json!("original"));
+        let p = h.app.session.catalog.photo(photo).unwrap();
+        assert_eq!(h.app.crop_tool_aspect(), Some((p.width * 100, p.height * 100)));
         h.settle(SETTLE);
+        assert_eq!(h.app.session.develop_of(photo).unwrap(), before);
     }
 
     /// While cropping: O cycles the guides, ⇧O mirrors them, A locks / unlocks the aspect.
