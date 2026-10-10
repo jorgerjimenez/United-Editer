@@ -30,9 +30,18 @@ impl Drop for Headless {
     }
 }
 
+/// Point the session's SAM 3 model folder at `dir` (the `LIGHTCRAFT_SAM3_DIR` override, as the desktop app does); unset or empty keeps the default.
+fn sam_dir_from(mut session: Session, dir: Option<std::ffi::OsString>) -> Session {
+    if let Some(dir) = dir.filter(|d| !d.is_empty()) {
+        session.segmenter.dir = Some(std::path::PathBuf::from(dir));
+    }
+    session
+}
+
 impl Default for Headless {
     fn default() -> Self {
-        Self::new(Session::new().with_fs().with_default_denoise_models().with_system_clock().with_default_face_models())
+        let session = Session::new().with_fs().with_default_denoise_models().with_system_clock().with_default_face_models();
+        Self::new(sam_dir_from(session, std::env::var_os("LIGHTCRAFT_SAM3_DIR")))
     }
 }
 
@@ -43,7 +52,8 @@ impl Headless {
 
     /// A headless session with the procedurally generated demo library.
     pub fn demo() -> Self {
-        Self::new(Session::with_demo().with_fs().with_default_denoise_models().with_system_clock().with_default_face_models())
+        let session = Session::with_demo().with_fs().with_default_denoise_models().with_system_clock().with_default_face_models();
+        Self::new(sam_dir_from(session, std::env::var_os("LIGHTCRAFT_SAM3_DIR")))
     }
 
     fn photo_or_active(&self, p: &Value) -> Result<PhotoId, String> {
@@ -200,6 +210,19 @@ pub fn write_image(path: &Path, img: &Rgba8, quality: u8) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `LIGHTCRAFT_SAM3_DIR` sets the model folder that `segment.model.status` reports (issue #619).
+    #[test]
+    fn sam_dir_override_reaches_the_session() {
+        let dir = std::env::temp_dir().join("lc-mcp-sam3-dir");
+        let session = sam_dir_from(Session::new(), Some(dir.clone().into_os_string()));
+        assert_eq!(session.segmenter.dir.as_deref(), Some(dir.as_path()));
+        assert_eq!(sam_dir_from(Session::new(), None).segmenter.dir, None);
+        assert_eq!(sam_dir_from(Session::new(), Some(std::ffi::OsString::new())).segmenter.dir, None);
+        let mut h = Headless::new(session);
+        let r = h.call("engine.execute", json!({"command": "segment.model.status", "params": {}})).unwrap();
+        assert_eq!(r["dir"], json!(dir.display().to_string()), "{r}");
+    }
 
     /// A headless session stamps imports and edits with the system clock, not the engine's fixed test clock.
     #[test]
