@@ -468,6 +468,28 @@ fn crop_drag_activates_the_remembered_ratio_and_undo_restores_the_photo() {
     assert_eq!(develop(&h), before);
 }
 
+/// A remembered ratio the crop command refuses (a hand-edited settings file) is forgotten, and the
+/// drag still crops: it must not block every crop of an untouched photo.
+#[test]
+fn a_bad_remembered_ratio_is_dropped_and_the_drag_still_crops() {
+    let mut h = detail("panel.crop");
+    h.app.ui.crop_default_aspect = Some(json!([0, -3]));
+    h.settle(SETTLE);
+    let before = develop(&h);
+    // a rotating drag outside the box (any crop drag starts cropping); the release on its own
+    for events in [
+        json!([{"kind": "down", "x": -0.05, "y": 0.2}, {"kind": "drag", "x": -0.05, "y": 0.25}, {"kind": "drag", "x": -0.05, "y": 0.3}]),
+        json!([{"kind": "up", "x": -0.05, "y": 0.3}]),
+    ] {
+        let r = h.request("ui.pointer", json!({ "events": events }), T);
+        assert_eq!(r["ok"], true, "{r}");
+        h.settle(SETTLE);
+    }
+    assert_eq!(h.app.ui.crop_default_aspect, None, "the bad value is forgotten");
+    assert_ne!(develop(&h).crop, before.crop, "the drag cropped");
+    assert_eq!(develop(&h).crop.aspect, None);
+}
+
 #[test]
 fn double_click_in_crop_box_applies_the_crop() {
     let mut h = detail("panel.crop");
