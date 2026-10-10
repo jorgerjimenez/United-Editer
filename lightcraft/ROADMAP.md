@@ -80,6 +80,8 @@ Image navigation now supports native pinch zoom and two-finger pan in Detail, Co
 The whole-image preview still has a configurable size cap (2,560 px default), so 100% on larger photos does not
 yet guarantee original-pixel detail; visible-region rendering remains a gap (LR-VIEW-ZOOM).
 
+Widget state styling now uses the shared `craft-ui` theme helper. LightCraft retains its dark palette, typography, spacing and per-state borders.
+
 ## Milestones
 
 **Status legend:** ✅ done · 🚧 in progress · ⬜ not started
@@ -240,3 +242,5 @@ with the optional `CRAFT_FONTS_DIR` input (all releases), so no system fonts are
 characters stay upright in top-to-bottom columns, with newlines starting columns to the
 left. This is basic lettering, without tate-chu-yoko, ruby, kinsoku, or general vertical
 OpenType shaping. The same coverage renderer serves 8/16/32-bit exports.
+
+- **2026-10-10 (UI docking):** Library, Tools, and Presets panels can be regrouped, split, floated within the app window, closed, and reopened. Tools keeps the current Edit/Crop/Masking mode; the photo view and filmstrip stay together. Panel moves and reset are available as UI commands, and saved UI preferences retain arrangements. No milestone percentage change.

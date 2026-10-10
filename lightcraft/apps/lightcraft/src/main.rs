@@ -192,7 +192,12 @@ fn load_prefs_at(path: &std::path::Path, set_aside_damaged: bool) -> (Option<UiS
             return (None, Some(msg), true);
         }
     };
-    match serde_json::from_slice::<UiState>(&bytes) {
+    match serde_json::from_slice::<UiState>(&bytes).map_err(|error| error.to_string()).and_then(|ui| {
+        if let Some(workspace) = &ui.docking {
+            workspace.validate()?;
+        }
+        Ok(ui)
+    }) {
         Ok(ui) => (Some(ui.sanitized()), None, false),
         Err(e) if !set_aside_damaged => {
             let msg = format!("The app settings ({}) are damaged ({e}). Defaults are used; nothing is saved in this session.", path.display());
@@ -270,6 +275,9 @@ impl PrefsWriter {
             return Ok(());
         }
         let Some(path) = self.path.clone() else { return Ok(()) };
+        if let Some(workspace) = &ui.docking {
+            workspace.validate()?;
+        }
         let bytes = serde_json::to_vec_pretty(ui).map_err(|e| e.to_string())?;
         if bytes == self.written {
             return Ok(());
@@ -608,6 +616,7 @@ OPTIONS:
   --version, --help
 
 ENVIRONMENT:
+  LIGHTCRAFT_CONFIG_DIR=DIR   use this settings folder instead of the platform default (empty = no settings folder)
   LIGHTCRAFT_GPU_BACKEND=dx12|vulkan|metal|auto|off   graphics backend (default: DX12 on Windows, Metal on macOS,
                    Vulkan on Linux; off = render on the CPU); else WGPU_BACKEND. LIGHTCRAFT_GPU=0: CPU rendering.
   LIGHTCRAFT_SAM3_DIR=DIR   the SAM 3 model for Object / Describe masks (default: <settings folder>/models/sam3;
@@ -663,10 +672,16 @@ fn control_port_from(what: &str, value: Option<String>) -> Option<u16> {
     port
 }
 
+/// An isolated profile keeps the emergency crash log with its other app data. With no
+/// override (or an empty override), retain the historical system-temp location.
+fn panic_log_path_with(env: impl Fn(&str) -> Option<std::ffi::OsString>, temp: std::path::PathBuf) -> std::path::PathBuf {
+    env("LIGHTCRAFT_CONFIG_DIR").filter(|value| !value.is_empty()).map(std::path::PathBuf::from).unwrap_or(temp).join("lightcraft-panics.log")
+}
+
 fn main() -> eframe::Result {
     // First, so every start-up record is kept for the log file (`logging`).
     let logger = logging::install();
-    lightcraft_engine::guard::install_hook(std::env::temp_dir().join("lightcraft-panics.log"));
+    lightcraft_engine::guard::install_hook(panic_log_path_with(|name| std::env::var_os(name), std::env::temp_dir()));
     if let Some(logger) = logger {
         logging::record_panics(logger);
     }
@@ -904,6 +919,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[test]
+    fn docking_survives_native_settings_file_reload() {
+        use lightcraft_ui_egui::docking::Panel;
+        let d = dir("docking-reload");
+        let path = d.join("ui.json");
+        let mut app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), Services::default());
+        app.run("ui.dock", serde_json::json!({"operation":"float", "panel":"tools", "rect":[70,80,310,500]})).unwrap();
+        app.run("ui.dock", serde_json::json!({"operation":"close", "panel":"tools"})).unwrap();
+        let mut writer = PrefsWriter { path: Some(path.clone()), ..Default::default() };
+        writer.save_ui(&app.ui, false).unwrap();
+        let (restored, warning, keep) = load_prefs_at(&path, false);
+        assert!(warning.is_none());
+        assert!(!keep);
+        let mut restored_app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), Services::default());
+        restored_app.ui = restored.unwrap();
+        restored_app.run("ui.dock", serde_json::json!({"operation":"open", "panel":"tools"})).unwrap();
+        assert_eq!(
+            restored_app.ui.docking.as_ref().unwrap().layout.floating.iter().find(|g| g.panels.contains(&Panel::Tools)).unwrap().rect,
+            [70.0, 80.0, 310.0, 500.0]
+        );
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
     /// Issue #164: the writer saves changed settings to its file — and nothing at all without one
     /// (`--memory`) or while the session is the temporary one offered when the library can't open.
     #[test]
@@ -1054,5 +1092,18 @@ mod tests {
         let (loaded, warning, _) = load_prefs_at(&path, true);
         assert!(loaded.is_some() && warning.is_none());
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod config_path_tests {
+    use super::*;
+
+    #[test]
+    fn config_override_keeps_panic_log_in_isolated_profile() {
+        let temp = std::path::PathBuf::from("temp");
+        assert_eq!(panic_log_path_with(|_| Some("isolated".into()), temp.clone()), std::path::PathBuf::from("isolated/lightcraft-panics.log"));
+        assert_eq!(panic_log_path_with(|_| None, temp.clone()), temp.join("lightcraft-panics.log"));
+        assert_eq!(panic_log_path_with(|_| Some("".into()), temp.clone()), temp.join("lightcraft-panics.log"));
     }
 }
