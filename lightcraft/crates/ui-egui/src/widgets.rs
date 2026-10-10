@@ -501,8 +501,12 @@ pub fn stars(ui: &mut Ui, id: &str, rating: u8, size: f32) -> Option<u8> {
         }
         *slot = r;
     }
-    // Hover previews the rating a click would set: stars 1..=hovered light up.
+    // Hover previews the rating a click would set: stars 1..=hovered light up. The hovered star also gets the
+    // icon_button hover square, so hovering the current rating (where the preview looks the same) still shows feedback.
     for (i, r) in (0..5u8).zip(rects) {
+        if hover_n == Some(i + 1) {
+            ui.painter().rect_filled(r, 4.0, t.hover.gamma_multiply(0.7));
+        }
         let filled = star_lit(i, rating, hover_n);
         paint(ui.painter(), r.shrink(size * 0.12), if filled { Icon::StarFilled } else { Icon::Star }, if filled { t.star } else { t.icon });
     }
