@@ -10,15 +10,29 @@
 //! run them off the UI thread.
 #![forbid(unsafe_code)]
 
+// Model/cache types remain available without linking the optional inference crate.
+#[cfg(not(feature = "denoise"))]
+extern crate lightcraft_denoise_core as lightcraft_denoise;
+
+pub mod activity;
 pub mod availability;
-mod camera_preview;
+pub(crate) mod camera_preview;
 pub mod camera_profiles;
 pub mod cmd;
+pub mod config;
+pub mod contact_sheet;
 pub mod crs;
 pub mod crs_masks;
 pub mod demo;
+pub mod denoise;
 pub mod devices;
+pub mod display;
 pub mod export;
+pub mod face_download;
+#[cfg(not(target_arch = "wasm32"))]
+mod faces_index;
+#[cfg(not(target_arch = "wasm32"))]
+mod faces_worker;
 pub mod files;
 pub mod fonts;
 pub mod guard;
@@ -33,6 +47,7 @@ pub mod logging;
 pub mod media;
 pub mod memory;
 pub mod merge;
+mod model_download;
 pub mod originals;
 pub mod preset_import;
 pub mod preset_luminar;
@@ -41,6 +56,7 @@ pub mod rename;
 pub mod segment;
 pub mod sidecar;
 pub mod smart;
+pub mod sync;
 mod view;
 pub mod walk;
 
@@ -132,8 +148,10 @@ pub struct Interaction {
 
 /// Source of [`Session::visible_shared`] generations (process-wide, so two sessions never share one).
 static VISIBLE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static LIBRARY_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 pub struct Session {
+    library_generation: u64,
     /// Auto Sync: edits to the active photo also change the other selected photos (the settings
     /// that changed, nothing else).
     pub auto_sync: bool,
@@ -152,11 +170,25 @@ pub struct Session {
     /// Photos in the current source with no filter on (cached like `visible`).
     total: Option<((u64, String), usize)>,
     pub undo: Vec<UndoEntry>,
+    /// Undo steps committed in this session, ever (the history drops its oldest past 1000, so
+    /// its length can't tell how many steps a command just made; see [`Session::commits`]).
+    commits: u64,
     pub redo: Vec<UndoEntry>,
     pub interaction: Option<Interaction>,
     /// Set by a command whose change must not rewrite the photo's XMP sidecar even with auto-write on
     /// (a catalog-only edit of data the sidecar writer does not emit); consumed when the command ends.
     pub(crate) skip_auto_write: bool,
+    /// AI denoise: the model in use, the photos that have their picture and the work in progress.
+    pub(crate) denoise: denoise::State,
+    /// Where the host keeps face models (one folder each); `None` where there is no file system (the web).
+    pub face_models_dir: Option<std::path::PathBuf>,
+    /// Face model downloads started this session (the staged files wait in `<face_models_dir>/.downloads`).
+    pub face_downloads: face_download::Downloads,
+    /// The user's own list of models to download (`catalog.json` in the models folder), as last read.
+    pub(crate) face_catalog: lightcraft_faces::catalog::Catalog,
+    /// The loaded recognition model and the face embeddings made with it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) faces: faces_index::FacesState,
     /// Copied develop settings (partial JSON) for Paste.
     pub clipboard: Option<Value>,
     /// The folder on disk the [`LibrarySource::Folder`] view browses.
@@ -227,6 +259,12 @@ pub struct Session {
     pub before: std::collections::HashMap<PhotoId, Arc<DevelopSettings>>,
     /// File probes from the last import review (`library.importPreview`), reused by the import.
     pub import_probes: std::collections::HashMap<String, media::ProbeInfo>,
+    /// The last Synchronize Folder scan, which `folder.synchronize` acts on while it is current
+    /// (see [`Session::take_folder_changes`]).
+    pub folder_changes: Option<sync::FolderChanges>,
+    /// Background tasks in flight (imports, exports, preview builds…), for the activity stack and
+    /// `activity.list` / `activity.cancel`.
+    pub activity: activity::Activity,
     /// The last (or running) Build Previews.
     pub preview_build: Option<std::sync::Arc<cmd::previews::PreviewBuild>>,
     /// Develop defaults applied on import (persisted in prefs.json).
@@ -247,8 +285,13 @@ impl Default for Session {
 }
 
 impl Session {
+    pub fn library_generation(&self) -> u64 {
+        self.library_generation
+    }
+
     pub fn new() -> Session {
         Session {
+            library_generation: LIBRARY_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             auto_sync: false,
             catalog: Catalog::new(),
             source: LibrarySource::All,
@@ -260,9 +303,16 @@ impl Session {
             visible_gen: 0,
             total: None,
             undo: Vec::new(),
+            commits: 0,
             redo: Vec::new(),
             interaction: None,
             skip_auto_write: false,
+            denoise: Default::default(),
+            face_models_dir: None,
+            face_downloads: Default::default(),
+            face_catalog: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            faces: Default::default(),
             clipboard: None,
             meta_clipboard: None,
             browse: None,
@@ -298,6 +348,8 @@ impl Session {
             recent_keywords: Vec::new(),
             before: Default::default(),
             import_probes: Default::default(),
+            folder_changes: None,
+            activity: Default::default(),
             preview_build: None,
             import_defaults: import::ImportDefaults::default(),
             cache_mb: 0,
@@ -316,7 +368,10 @@ impl Session {
     /// Run a command by id. THE entry point for every frontend.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
-        (spec.enabled)(self).map_err(|why| EngineError::Disabled(id.to_string(), why))?;
+        // a command that validates the photos a call names isn't held back by the selection
+        if !(spec.explicit_targets && cmd::names_photos(params)) {
+            (spec.enabled)(self).map_err(|why| EngineError::Disabled(id.to_string(), why))?;
+        }
         let empty = Value::Object(Default::default());
         let params = if params.is_null() { &empty } else { params };
         self.run_command(id, spec.journal.then_some(params), |s| (spec.run)(s, params))
@@ -386,6 +441,7 @@ impl Session {
         let inv = self.catalog.apply(op)?;
         self.pending_log.push(fwd);
         self.undo.push(UndoEntry { label: label.to_string(), op: inv, folder: None });
+        self.commits = self.commits.wrapping_add(1);
         if self.undo.len() > 1000 {
             self.undo.remove(0);
         }
@@ -400,6 +456,27 @@ impl Session {
         if let Some(e) = self.undo.last_mut() {
             e.folder = Some(folder);
         }
+        Ok(())
+    }
+
+    /// The box to cut a face's picture from: the detector's, when the scan has looked at the face (every face is then shown
+    /// equally close, however loosely or tightly its own region was drawn), else the region's own box.
+    pub fn face_view(&self, id: PhotoId, rect: lightcraft_geom::Rect) -> lightcraft_geom::Rect {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(v) = self.faces.index.view(id.0, &rect) {
+            return v;
+        }
+        let _ = id;
+        rect
+    }
+
+    /// Apply an op that is LightCraft's own bookkeeping rather than something the user did (faces found by the background
+    /// scan): journaled like any op, but not an undo step, and it leaves the redo stack alone.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn apply_system(&mut self, op: Op) -> Result<()> {
+        let fwd = op.clone();
+        self.catalog.apply(op)?;
+        self.pending_log.push(fwd);
         Ok(())
     }
 
@@ -429,6 +506,12 @@ impl Session {
 
     /// Fold the last `n` undo steps into one (commands that commit step by step because each op
     /// depends on the state the previous one left).
+    /// How many undo steps were committed in this session so far: what a command that commits
+    /// several steps compares before and after to merge them ([`Session::merge_undo`]).
+    pub fn commits(&self) -> u64 {
+        self.commits
+    }
+
     pub fn merge_undo(&mut self, n: usize, label: &str) {
         if n < 2 || n > self.undo.len() {
             return;
@@ -569,7 +652,8 @@ impl Session {
 
     /// With Auto Sync on, the ops that carry an edit of the active photo `id` (to `new`) over to the
     /// other selected photos: only the settings that changed; never spot removal or red eye (they
-    /// belong to one photo's pixels), nor history / snapshot restores.
+    /// belong to one photo's pixels), nor the rendering process (Sync doesn't carry it either), nor
+    /// history / snapshot restores.
     fn auto_sync_ops(&self, id: PhotoId, new: &DevelopSettings, label: &str) -> Vec<Op> {
         if !self.auto_sync
             || self.active() != Some(id)
@@ -582,7 +666,7 @@ impl Session {
         let Some(old) = self.develop_of(id) else { return Vec::new() };
         let Some(mut delta) = json_delta(&old.to_json(), &new.to_json()) else { return Vec::new() };
         if let Some(o) = delta.as_object_mut() {
-            for k in ["spots", "red_eye", "version"] {
+            for k in ["spots", "red_eye", "version", "process"] {
                 o.remove(k);
             }
             if o.is_empty() {
@@ -781,9 +865,18 @@ pub fn json_delta(old: &Value, new: &Value) -> Option<Value> {
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_album_order;
+#[cfg(test)]
 mod tests_color;
 #[cfg(test)]
+mod tests_denoise;
+#[cfg(test)]
 mod tests_export;
+#[cfg(test)]
+mod tests_face_models;
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod tests_face_recognize;
 #[cfg(test)]
 mod tests_folders;
 #[cfg(test)]
@@ -792,6 +885,8 @@ mod tests_forget_local;
 mod tests_import;
 #[cfg(test)]
 mod tests_import_move;
+#[cfg(test)]
+mod tests_keyword_list;
 #[cfg(test)]
 mod tests_libops;
 #[cfg(test)]
@@ -805,10 +900,14 @@ mod tests_persist;
 #[cfg(test)]
 mod tests_prefs;
 #[cfg(test)]
+mod tests_process;
+#[cfg(test)]
 mod tests_segment;
 #[cfg(test)]
 mod tests_settings_files;
 #[cfg(test)]
 mod tests_spots;
+#[cfg(test)]
+mod tests_sync;
 #[cfg(test)]
 mod tests_xmp;

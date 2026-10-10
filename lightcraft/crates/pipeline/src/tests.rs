@@ -360,6 +360,46 @@ fn soft_proof_maps_into_the_proof_gamut_and_flags_what_does_not_fit() {
     assert!(red(&pro) < n, "ProPhoto holds more than sRGB");
 }
 
+/// A preview for a monitor with a display profile renders into the display's primaries: for a
+/// display that *is* a standard space, exactly what an 8-bit render into that space gives.
+#[test]
+fn display_space_renders_like_the_matching_output_space() {
+    use crate::{DisplaySpace, OutputSpace, Proof};
+    let src = scene();
+    let mut s = DevelopSettings::default();
+    s.color.saturation = 100.0;
+    s.color.vibrance = 100.0;
+    let info = SourceInfo { raw: true, ..Default::default() };
+    let req = |space, display, proof| RenderRequest { space, display, proof, ..RenderRequest::fit(120, 120) };
+    for space in [OutputSpace::Srgb, OutputSpace::DisplayP3] {
+        let d = DisplaySpace::of(space, 7).unwrap();
+        let want = render(&src, &info, &s, &req(space, None, None)).image;
+        let got = render(&src, &info, &s, &req(OutputSpace::Srgb, Some(d), None)).image;
+        assert!(max_diff(&got, &want) <= 1, "{space:?}: {}", max_diff(&got, &want));
+    }
+    // a wide display shows the saturated colours sRGB clips
+    let srgb = render(&src, &info, &s, &req(OutputSpace::Srgb, None, None)).image;
+    let p3 = render(&src, &info, &s, &req(OutputSpace::Srgb, Some(DisplaySpace::of(OutputSpace::DisplayP3, 1).unwrap()), None)).image;
+    assert!(max_diff(&srgb, &p3) > 4);
+
+    // soft proofing on a display: the display gamut warning is about *this* display
+    let blue = |img: &lightcraft_raster::Rgba8| img.data.iter().filter(|p| p[2] == 255 && p[0] == 0 && p[1] < 80).count();
+    let pro = Some(Proof { space: OutputSpace::ProPhoto, dest_warning: false, display_warning: true });
+    let on_srgb = blue(&render(&src, &info, &s, &req(OutputSpace::Srgb, Some(DisplaySpace::of(OutputSpace::Srgb, 2).unwrap()), pro)).image);
+    let on_wide = blue(&render(&src, &info, &s, &req(OutputSpace::Srgb, Some(DisplaySpace::of(OutputSpace::Rec2020, 3).unwrap()), pro)).image);
+    assert!(on_srgb > 0 && on_wide < on_srgb, "{on_srgb} {on_wide}");
+    let plain = blue(&render(&src, &info, &s, &req(OutputSpace::Srgb, None, pro)).image);
+    assert_eq!(plain, on_srgb, "an sRGB display warns like no display profile");
+}
+
+#[test]
+fn display_space_rejects_degenerate_matrices() {
+    use crate::DisplaySpace;
+    assert!(DisplaySpace::new(lightcraft_color::Mat3([[1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0]]), 1).is_none());
+    assert!(DisplaySpace::new(lightcraft_color::Mat3([[f64::NAN, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]), 1).is_none());
+    assert!(DisplaySpace::new(lightcraft_color::Mat3::IDENTITY, 1).is_some());
+}
+
 #[test]
 fn tint_negative_is_green_and_positive_is_magenta() {
     use lightcraft_develop::WbMode;
@@ -369,6 +409,8 @@ fn tint_negative_is_green_and_positive_is_magenta() {
         SourceInfo::default(),
         SourceInfo { raw: true, relative_wb: true, ..Default::default() },
         SourceInfo { raw: true, as_shot_temp: 4200.0, as_shot_tint: 15.0, ..Default::default() },
+        // camera-space white balance: the same sign through the camera's own colour model
+        SourceInfo { raw: true, as_shot_temp: 4200.0, as_shot_tint: 15.0, camera_color: Some(camera_color(4200.0, 15.0)), ..Default::default() },
     ] {
         let mut s = DevelopSettings::default();
         let neutral = render(&src, &info, &s, &RenderRequest::fit(16, 16)).image.get(8, 8);
@@ -381,6 +423,101 @@ fn tint_negative_is_green_and_positive_is_magenta() {
             let p = render(&src, &info, &s, &RenderRequest::fit(16, 16)).image.get(8, 8);
             let magenta = (p[0] as f64 + p[2] as f64) / 2.0 - p[1] as f64;
             assert!(magenta * delta > 100.0, "delta {delta} must follow the green/magenta track, got {p:?}");
+        }
+    }
+}
+
+/// A dual-illuminant (A / D65) camera colour model, its pixels developed for `temp` / `tint`.
+fn camera_color(temp: f64, tint: f64) -> std::sync::Arc<crate::CameraColor> {
+    use lightcraft_color::Mat3;
+    let tags = lightcraft_raw::ColorData {
+        illuminant: [17, 21],
+        color_matrix: [
+            Some(Mat3([[0.9, 0.2, -0.15], [-0.3, 1.25, 0.08], [0.02, -0.12, 0.85]])),
+            Some(Mat3([[0.7, 0.3, -0.1], [-0.35, 1.3, 0.1], [0.05, -0.2, 1.0]])),
+        ],
+        ..Default::default()
+    };
+    std::sync::Arc::new(crate::CameraColor { tags, developed_for: lightcraft_color::cct::temp_tint_to_xy(temp, tint) })
+}
+
+/// Camera-space white balance: a raw source with its colour model is re-developed for the chosen
+/// white, so a grey card lit by that white renders neutral. Without the model, or with a relative
+/// white balance, the developed pixels are adapted (Bradford, neutral luminance kept).
+#[test]
+fn custom_white_balance_redevelops_in_camera_space() {
+    use crate::local::wb_matrix_for;
+    use lightcraft_color::cct::temp_tint_to_xy;
+    use lightcraft_develop::WbMode;
+    let cc = camera_color(5500.0, 0.0);
+    let info = SourceInfo { raw: true, as_shot_temp: 5500.0, as_shot_tint: 0.0, camera_color: Some(cc.clone()), ..Default::default() };
+    let mut s = DevelopSettings::default();
+    (s.wb.mode, s.wb.temp, s.wb.tint) = (WbMode::Custom, 3200.0, 10.0);
+    // a grey card lit by 3200 K / +10, as the camera records it, developed for the as-shot white
+    let a = lightcraft_raw::color::camera_transform_of(&cc.tags, cc.developed_for);
+    let n = lightcraft_raw::color::camera_neutral(&cc.tags, temp_tint_to_xy(3200.0, 10.0));
+    let card = a.matrix.apply(std::array::from_fn(|i| n[i] * a.wb[i] as f64)).map(|v| v as f32);
+    let apply = |m: [[f32; 3]; 3], c: [f32; 3]| -> [f32; 3] { std::array::from_fn(|r| m[r][0] * c[0] + m[r][1] * c[1] + m[r][2] * c[2]) };
+    let m = wb_matrix_for(&info, &s).unwrap();
+    let out = apply(m, card);
+    assert!(out.iter().all(|v| (v / out[1] - 1.0).abs() < 1e-4), "{card:?} -> {out:?}");
+    // the adaptation path for sources without a colour model, and for relative white balance
+    let luma = |c: [f32; 3]| lightcraft_color::luminance_2020(c);
+    for other in [SourceInfo { camera_color: None, ..info.clone() }, SourceInfo { relative_wb: true, ..info.clone() }] {
+        let b = wb_matrix_for(&other, &s).unwrap();
+        assert_ne!(b, m);
+        assert!((luma(apply(b, [1.0; 3])) - 1.0).abs() < 1e-4);
+    }
+    // the white-balance picker / auto white balance invert the same model: the card names its white
+    let picked = crate::auto::auto_wb(&Rgb32f::filled(4, 4, card), &info);
+    assert_eq!(picked, (3200.0, 10.0));
+    // the as-shot white needs nothing
+    s.wb.mode = WbMode::AsShot;
+    assert!(wb_matrix_for(&info, &s).is_none());
+}
+
+/// Every stored process number renders with a process this build knows: settings saved before
+/// process versions existed exactly as V1, and a number from a newer LightCraft exactly as the
+/// latest process here (`docs/process-versions.md`). Raw (base tone curve), camera-tone and
+/// rendered sources, plain and edited, 8-bit and 16-bit.
+#[test]
+fn stored_process_numbers_render_with_a_known_process() {
+    use lightcraft_develop::{Process, ProcessVersion};
+    let src = scene();
+    let curve = crate::tone::CameraTone::new(std::array::from_fn(|i| {
+        let x = 0.004 * 1.18f32.powi(i as i32);
+        [x, 1.0 - (-2.0 * x).exp()]
+    }))
+    .unwrap();
+    let infos = [
+        SourceInfo::default(),
+        SourceInfo { raw: true, as_shot_temp: 5200.0, as_shot_tint: 4.0, ..Default::default() },
+        SourceInfo { raw: true, relative_wb: true, camera_tone: Some(curve), ..Default::default() },
+    ];
+    let mut edited = DevelopSettings::for_raw(5200.0, 4.0);
+    for (id, v) in [("light.exposure", 0.4), ("light.contrast", 30.0), ("light.highlights", -60.0), ("light.whites", 15.0), ("light.blacks", -20.0)] {
+        controls::set(&mut edited, id, v);
+    }
+    let legacy = |s: &DevelopSettings| {
+        let mut v = s.to_json();
+        v.as_object_mut().unwrap().remove("process");
+        DevelopSettings::from_json(&v).unwrap()
+    };
+    let with = |s: &DevelopSettings, p: ProcessVersion| DevelopSettings { process: p, ..s.clone() };
+    let deep = RenderRequest { depth: crate::OutputDepth::U16, ..RenderRequest::fit(96, 96) };
+    for info in &infos {
+        for s in [DevelopSettings::default(), edited.clone()] {
+            for req in [RenderRequest::fit(96, 96), deep] {
+                let out = |s: &DevelopSettings| {
+                    let r = render(&src, info, s, &req);
+                    (r.image.data, r.deep)
+                };
+                let v1 = out(&with(&s, ProcessVersion::V1));
+                assert_eq!(legacy(&s).process, ProcessVersion::V1);
+                assert!(out(&legacy(&s)) == v1, "saved before process versions: rendered as V1");
+                let latest = out(&with(&s, Process::LATEST.version()));
+                assert!(out(&with(&s, ProcessVersion(Process::LATEST.version().0 + 7))) == latest, "newer than this build: as the latest");
+            }
         }
     }
 }

@@ -94,7 +94,8 @@ fn auto_write_and_naming_preference() {
     // a slider drag writes once, at the end
     s.execute("develop.beginInteraction", &json!({"label": "Exposure"})).unwrap();
     s.execute("develop.set", &json!({"control": "light.exposure", "value": 1.5})).unwrap();
-    let exposure = |p: &Path| match crate::sidecar::parse_sidecar(&std::fs::read_to_string(p).unwrap(), false).unwrap().develop {
+    let exposure = |p: &Path| match crate::sidecar::parse_sidecar(&std::fs::read_to_string(p).unwrap(), crate::crs::Target::Rendered).unwrap().develop
+    {
         Some(crate::sidecar::DevelopPatch::Full(d)) => d.light.exposure,
         other => panic!("{other:?}"),
     };
@@ -192,19 +193,42 @@ fn foreign_profile_and_upright_import_diagnostics_are_actionable() {
     let sidecar = src.join("faithful.xmp");
     std::fs::write(&sidecar, xmp).unwrap();
     let before = std::fs::read(&sidecar).unwrap();
+    let photo_path = photo.to_string_lossy().to_string();
     let mut s = Session::new().with_fs();
     let r = s.execute("library.import", &json!({"paths": [photo.to_string_lossy()]})).unwrap();
     let warnings = r["warnings"].as_array().unwrap();
     assert!(warnings.iter().any(|w| w["code"] == "cameraProfile" && w["profile"] == "Camera Faithful"), "{r}");
     assert!(warnings.iter().any(|w| w["code"] == "uprightGeometry" && w["mode"] == "auto"), "{r}");
+    assert!(warnings.iter().all(|w| w.get("fields").is_none()), "{r}");
+    let import_warnings: Vec<crate::import::ImportWarning> =
+        warnings.iter().cloned().map(serde_json::from_value).collect::<std::result::Result<_, _>>().unwrap();
+    let import_profile = import_warnings.iter().find(|w| w.code == crate::import::ImportWarningCode::CameraProfile).unwrap();
+    assert_eq!(import_profile.path, photo_path);
+    assert_eq!(import_profile.profile.as_deref(), Some("Camera Faithful"));
+    assert!(import_profile.fields.is_empty());
+    let import_upright = import_warnings.iter().find(|w| w.code == crate::import::ImportWarningCode::UprightGeometry).unwrap();
+    assert_eq!(import_upright.path, photo_path);
+    assert_eq!(import_upright.mode, Some(crate::import::ImportUprightMode::Auto));
+    assert!(import_upright.fields.is_empty());
     let p = s.catalog.photos().next().unwrap().clone();
     assert_eq!(p.develop.profile.id, "lc.color");
     assert_eq!(p.develop.light.exposure, 1.68);
     assert_eq!(std::fs::read(&sidecar).unwrap(), before, "import never rewrites foreign XMP");
 
     // Metadata reread carries same structured diagnostics, with each saved Upright mode typed.
-    let photo_path = photo.to_string_lossy().to_string();
     let reread = s.execute("photo.readMetadataFromFile", &json!({"ids": [p.id.0]})).unwrap();
+    let reread_wires = reread["warnings"].as_array().unwrap();
+    assert!(reread_wires.iter().all(|w| w.get("fields").is_none()), "{reread}");
+    let reread_warnings: Vec<crate::import::ImportWarning> =
+        reread_wires.iter().cloned().map(serde_json::from_value).collect::<std::result::Result<_, _>>().unwrap();
+    let reread_profile = reread_warnings.iter().find(|w| w.code == crate::import::ImportWarningCode::CameraProfile).unwrap();
+    assert_eq!(reread_profile.path, photo_path);
+    assert_eq!(reread_profile.profile.as_deref(), Some("Camera Faithful"));
+    assert!(reread_profile.fields.is_empty());
+    let reread_upright = reread_warnings.iter().find(|w| w.code == crate::import::ImportWarningCode::UprightGeometry).unwrap();
+    assert_eq!(reread_upright.path, photo_path);
+    assert_eq!(reread_upright.mode, Some(crate::import::ImportUprightMode::Auto));
+    assert!(reread_upright.fields.is_empty());
     assert!(
         reread["warnings"]
             .as_array()
@@ -232,6 +256,16 @@ fn foreign_profile_and_upright_import_diagnostics_are_actionable() {
     );
     let collision_photo = s.catalog.photos().find(|photo| photo.file_name == "collision.png").unwrap();
     assert_eq!(collision_photo.develop.profile.id, "lc.color");
+
+    let unmapped = crate::import::ImportWarning {
+        path: photo_path.clone(),
+        code: crate::import::ImportWarningCode::UnmappedXmp,
+        profile: None,
+        mode: None,
+        fields: vec!["Tint".into()],
+    };
+    let unmapped_wire = serde_json::to_value(&unmapped).unwrap();
+    assert_eq!(serde_json::from_value::<crate::import::ImportWarning>(unmapped_wire).unwrap(), unmapped);
 
     // A second import still diagnoses the untouched foreign packet, while an XMP-free photo does not.
     drop(s);
@@ -407,10 +441,15 @@ fn synthetic_dng(xmp: &str) -> Vec<u8> {
 
 /// A tiny Bayer DNG written by our own DNG writer (optional embedded XMP, camera metadata).
 pub(crate) fn synthetic_dng_with(xmp: Option<&str>, metadata: lightcraft_meta::Metadata) -> Vec<u8> {
-    use lightcraft_raw::*;
     let (w, h) = (32usize, 24usize);
-    let cfa = Cfa::bayer("RGGB").unwrap();
     let data: Vec<u16> = (0..w * h).map(|i| 256 + ((i % w) * 300 + (i / w) * 200) as u16).collect();
+    synthetic_dng_of(w, h, "RGGB", data, xmp, metadata)
+}
+
+/// A synthetic Bayer DNG for denoise and cache tests.
+pub(crate) fn synthetic_dng_of(w: usize, h: usize, cfa: &str, data: Vec<u16>, xmp: Option<&str>, metadata: lightcraft_meta::Metadata) -> Vec<u8> {
+    use lightcraft_raw::*;
+    let cfa = Cfa::bayer(cfa).unwrap();
     let raw = RawImage {
         format: RawFormat::Dng,
         width: w,

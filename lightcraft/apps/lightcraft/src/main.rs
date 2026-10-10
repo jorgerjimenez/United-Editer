@@ -52,8 +52,15 @@ struct App(LightcraftApp, PrefsWriter, #[cfg(target_os = "macos")] Option<native
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
-        if let Some(m) = self.2.as_mut() {
-            m.update(&mut self.0, ctx);
+        if let Some(m) = self.2.as_mut()
+            && m.update(&mut self.0, ctx)
+            && lightcraft_ui_egui::panels::notices::may_close(&mut self.0)
+        {
+            // Quit from the menu bar: save exactly what closing the window saves (settings and
+            // library, after the unsaved-changes check; otherwise its prompt shows), then end the
+            // process instead of closing the viewport while AppKit is terminating (PR #444).
+            eframe::App::on_exit(self);
+            std::process::exit(0);
         }
         self.0.logic(ctx);
         self.1.tick(&mut self.0, ctx);
@@ -71,16 +78,26 @@ impl eframe::App for App {
         if let Err(e) = self.0.session.close_library() {
             log::error!("saving the library failed: {e}");
         }
+        // last, with everything saved: no render may be inside the GPU driver when the process ends
+        if !self.0.shutdown(EXIT_WAIT) {
+            log::warn!("quit: background work was still running after {EXIT_WAIT:?}");
+        }
     }
 }
 
+/// How long quitting waits for renders that are running (issue #620). A GPU render takes well under
+/// a second; anything slower gives way to quitting.
+const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The window's renderer (egui-wgpu): eframe's defaults, with LightCraft's backend choice — DX12
 /// alone on Windows unless `LIGHTCRAFT_GPU_BACKEND` / `WGPU_BACKEND` say otherwise (issue #136:
-/// with Vulkan in the set, wgpu loads the Vulkan driver even when it then picks DX12).
+/// with Vulkan in the set, wgpu loads the Vulkan driver even when it then picks DX12) — and DX12
+/// shaders compiled with FXC, never a stray `dxcompiler.dll` (issue #471).
 fn window_wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
     let mut c = eframe::egui_wgpu::WgpuConfiguration::default();
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(n) = &mut c.wgpu_setup {
         n.instance_descriptor.backends = lightcraft_engine::gpu::backend::window_backends();
+        n.instance_descriptor.backend_options = lightcraft_engine::gpu::backend::backend_options();
     }
     c
 }
@@ -124,8 +141,25 @@ fn gpu_crash_notice(what: &str) -> String {
     )
 }
 
+/// Where the system keeps monitor profiles, for the Choose Profile dialog to start in: the user's
+/// own profiles first (Linux: colord / DisplayCAL; macOS: ColorSync), then the system's.
+fn display_profile_dir() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).filter(|h| !h.is_empty()).map(std::path::PathBuf::from);
+    let user = |rel: &str| home.as_ref().map(|h| h.join(rel));
+    let candidates: Vec<Option<std::path::PathBuf>> = if cfg!(target_os = "macos") {
+        vec![user("Library/ColorSync/Profiles"), Some("/Library/ColorSync/Profiles".into())]
+    } else if cfg!(windows) {
+        let root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
+        vec![Some(root.join("System32").join("spool").join("drivers").join("color"))]
+    } else {
+        let data = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()).map(std::path::PathBuf::from).or_else(|| user(".local/share"));
+        vec![data.map(|d| d.join("icc")), user(".color/icc"), Some("/usr/share/color/icc".into())]
+    };
+    candidates.into_iter().flatten().find(|d| d.is_dir())
+}
+
 fn config_dir() -> Option<std::path::PathBuf> {
-    lightcraft_engine::camera_profiles::config_dir()
+    lightcraft_engine::config::config_dir()
 }
 
 /// `<config>/ui.json`, the saved UI state and app settings — `None` when nothing is read or
@@ -281,6 +315,39 @@ fn windows_open_url_command(url: &str) -> std::process::Command {
     c
 }
 
+/// Explorer's `/select,<path>` switch (issue #272). Explorer parses its own command line and only
+/// selects the file when the path after the comma is quoted (`/select,"C:\My Photos\a.jpg"`),
+/// spelled with backslashes and free of the verbatim prefix (`\\?\`, `\\?\UNC\`) that
+/// `canonicalize` adds; given anything else it opens Documents. Windows file names can't contain
+/// `"`; a path that does anyway (a hostile catalog) has them dropped, so the raw command line
+/// always holds exactly this one argument.
+fn explorer_select_arg(path: &str) -> String {
+    let path = path.replace('/', "\\").replace('"', "");
+    let path = match path.strip_prefix(r"\\?\UNC\") {
+        Some(unc) => format!(r"\\{unc}"),
+        None => path.strip_prefix(r"\\?\").unwrap_or(path.as_str()).to_string(),
+    };
+    format!("/select,\"{path}\"")
+}
+
+/// `explorer /select,"<path>"`. Rust's own argument quoting wraps the whole switch in quotes
+/// (`"/select,C:\My Photos\a.jpg"`) whenever the path has a space, which Explorer doesn't
+/// recognise, so on Windows the switch goes on the command line exactly as built.
+fn explorer_select_command(path: &str) -> std::process::Command {
+    let mut c = std::process::Command::new("explorer");
+    let arg = explorer_select_arg(path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.raw_arg(arg);
+    }
+    #[cfg(not(windows))]
+    {
+        c.arg(arg);
+    }
+    c
+}
+
 /// The platform services; `ctx` repaints when a file dialog closes, and `log_file` is
 /// for Help ▸ Open Log Folder.
 fn services(ctx: egui::Context, log_file: Option<&std::path::Path>) -> Services {
@@ -368,8 +435,7 @@ fn services(ctx: egui::Context, log_file: Option<&std::path::Path>) -> Services 
             let status = if cfg!(target_os = "macos") {
                 std::process::Command::new("open").args(["-R", path]).status()
             } else if cfg!(target_os = "windows") {
-                let win_path = path.replace('/', "\\");
-                std::process::Command::new("explorer").arg(format!("/select,{win_path}")).status()
+                explorer_select_command(path).status()
             } else {
                 let dir = std::path::Path::new(path).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_else(|| ".".into());
                 std::process::Command::new("xdg-open").arg(dir).status()
@@ -387,6 +453,13 @@ fn services(ctx: egui::Context, log_file: Option<&std::path::Path>) -> Services 
                 .map(|p| p.to_string_lossy().to_string())
                 .collect()
         })),
+        pick_denoise_model: Some(Box::new(|| {
+            rfd::FileDialog::new()
+                .add_filter_nocase(lightcraft_ui_egui::i18n::tr("ONNX model"), &["onnx"])
+                .pick_file()
+                .map(|p| vec![p.to_string_lossy().into_owned()])
+                .unwrap_or_default()
+        })),
         pick_preset_files: Some(Box::new(|| {
             rfd::FileDialog::new()
                 .set_title(lightcraft_ui_egui::i18n::tr("Import Presets"))
@@ -400,6 +473,14 @@ fn services(ctx: egui::Context, log_file: Option<&std::path::Path>) -> Services 
                 .map(|p| p.to_string_lossy().to_string())
                 .collect()
         })),
+        pick_model_file: Some(Box::new(|| {
+            rfd::FileDialog::new()
+                .set_title(lightcraft_ui_egui::i18n::tr("Add a Face Recognition Model"))
+                .add_filter_nocase(lightcraft_ui_egui::i18n::tr("Face models (ONNX)"), &["onnx"])
+                .pick_file()
+                .map(|p| vec![p.to_string_lossy().to_string()])
+                .unwrap_or_default()
+        })),
         pick_tracklog: Some(Box::new(|| {
             rfd::FileDialog::new()
                 .set_title(lightcraft_ui_egui::i18n::tr("Auto-Tag from Tracklog"))
@@ -408,10 +489,35 @@ fn services(ctx: egui::Context, log_file: Option<&std::path::Path>) -> Services 
                 .map(|p| vec![p.to_string_lossy().to_string()])
                 .unwrap_or_default()
         })),
+        pick_display_profile: Some(Box::new(|| {
+            let mut d = rfd::FileDialog::new()
+                .set_title(lightcraft_ui_egui::i18n::tr("Choose Monitor Profile"))
+                .add_filter_nocase(lightcraft_ui_egui::i18n::tr("ICC Profiles"), &["icc", "icm"]);
+            if let Some(dir) = display_profile_dir() {
+                d = d.set_directory(dir);
+            }
+            d.pick_file().map(|p| vec![p.to_string_lossy().to_string()]).unwrap_or_default()
+        })),
         save_preset_file: Some(Box::new(|name: &str| {
             rfd::FileDialog::new()
                 .set_title(lightcraft_ui_egui::i18n::tr("Export Presets"))
                 .add_filter_nocase(lightcraft_ui_egui::i18n::tr("LightCraft Preset"), &["lcpreset"])
+                .set_file_name(name)
+                .save_file()
+                .map(|p| p.to_string_lossy().to_string())
+        })),
+        pick_keyword_list: Some(Box::new(|| {
+            rfd::FileDialog::new()
+                .set_title(lightcraft_ui_egui::i18n::tr("Import Keywords"))
+                .add_filter_nocase(lightcraft_ui_egui::i18n::tr("Keyword Lists"), &["txt", "utf8"])
+                .pick_file()
+                .map(|p| vec![p.to_string_lossy().to_string()])
+                .unwrap_or_default()
+        })),
+        save_keyword_list: Some(Box::new(|name: &str| {
+            rfd::FileDialog::new()
+                .set_title(lightcraft_ui_egui::i18n::tr("Export Keywords"))
+                .add_filter_nocase(lightcraft_ui_egui::i18n::tr("Keyword Lists"), &["txt"])
                 .set_file_name(name)
                 .save_file()
                 .map(|p| p.to_string_lossy().to_string())
@@ -446,22 +552,29 @@ fn services(ctx: egui::Context, log_file: Option<&std::path::Path>) -> Services 
     }
 }
 
+/// The library session with the folder face models are kept in (`<config>/models`).
+fn open_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_demo: bool) -> (Session, Option<LibraryProblem>) {
+    let (mut s, problem) = open_library_session(in_memory, dir, seed_demo);
+    s.face_models_dir = lightcraft_engine::config::default_face_models_dir();
+    (s, problem)
+}
+
 /// The persistent library session, or with `--memory` an in-memory one (demo photos).
 ///
 /// If the library can't be opened the session is empty and in memory — never seeded with the
 /// demo photos, never written anywhere — and the problem is returned: the window then says so
 /// and offers Try Again / Choose Another Library… / Continue Without Saving / Quit (issue #100).
-fn open_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_demo: bool) -> (Session, Option<LibraryProblem>) {
+fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_demo: bool) -> (Session, Option<LibraryProblem>) {
     if in_memory {
-        return (if seed_demo { Session::with_demo() } else { Session::new() }.with_fs().with_system_clock(), None);
+        return (if seed_demo { Session::with_demo() } else { Session::new() }.with_fs().with_default_denoise_models().with_system_clock(), None);
     }
-    let unopened = || Session::new().with_fs().with_system_clock();
+    let unopened = || Session::new().with_fs().with_default_denoise_models().with_system_clock();
     let Some(dir) = dir else {
         log::warn!("no library location (set --library or LIGHTCRAFT_LIBRARY)");
         return (unopened(), Some(LibraryProblem::new("", "There is no home folder to keep the library in. Choose a folder for it.")));
     };
     let t0 = std::time::Instant::now();
-    let mut s = Session::new().with_fs().with_system_clock();
+    let mut s = Session::new().with_fs().with_default_denoise_models().with_system_clock();
     match s.open_library(&dir, seed_demo) {
         Ok(r) => {
             let (replayed, torn) = (r.replayed, r.torn_bytes);
@@ -876,6 +989,16 @@ mod tests {
         assert!(!b.is_empty());
     }
 
+    /// Issue #471: the window's DX12 shaders compile with FXC — wgpu's default loaded any
+    /// `dxcompiler.dll` on the search path, and one without `dxil.dll` kept the window from opening.
+    #[test]
+    fn window_compiles_dx12_shaders_with_fxc() {
+        let eframe::egui_wgpu::WgpuSetup::CreateNew(n) = window_wgpu_options().wgpu_setup else { panic!("expected CreateNew") };
+        if std::env::var_os("WGPU_DX12_COMPILER").is_none() {
+            assert!(matches!(n.instance_descriptor.backend_options.dx12.shader_compiler, eframe::wgpu::Dx12Compiler::Fxc));
+        }
+    }
+
     /// Issue #234: Windows opens links with the URL protocol handler (the default browser), not
     /// File Explorer, and passes the whole map link, `?`, `&` and `#` included, as one argument.
     #[test]
@@ -885,6 +1008,23 @@ mod tests {
         assert_eq!(c.get_program(), "rundll32");
         let args: Vec<&std::ffi::OsStr> = c.get_args().collect();
         assert_eq!(args, ["url.dll,FileProtocolHandler", url]);
+    }
+
+    /// Issue #272: Explorer gets the file to select quoted after `/select,`, with backslashes and
+    /// without the verbatim prefix, even when the path has spaces (else it opens Documents).
+    #[test]
+    fn explorer_select_quotes_the_path() {
+        assert_eq!(explorer_select_arg(r"C:\Users\Me\My Photos\IMG 1.jpg"), r#"/select,"C:\Users\Me\My Photos\IMG 1.jpg""#);
+        assert_eq!(explorer_select_arg("D:/Example/Photos/IMG_0001.CR3"), r#"/select,"D:\Example\Photos\IMG_0001.CR3""#);
+        assert_eq!(explorer_select_arg(r"\\server\share\My Photos\a.jpg"), r#"/select,"\\server\share\My Photos\a.jpg""#);
+        assert_eq!(explorer_select_arg(r"\\?\D:\My Photos\a.jpg"), r#"/select,"D:\My Photos\a.jpg""#);
+        assert_eq!(explorer_select_arg(r"\\?\UNC\server\share\a.jpg"), r#"/select,"\\server\share\a.jpg""#);
+        // a `"` can't end the quoted path and add arguments to the raw command line
+        assert_eq!(explorer_select_arg(r#"C:\a" "C:\b.jpg"#), r#"/select,"C:\a C:\b.jpg""#);
+        let c = explorer_select_command(r"C:\My Photos\a.jpg");
+        assert_eq!(c.get_program(), "explorer");
+        let args: Vec<&std::ffi::OsStr> = c.get_args().collect();
+        assert_eq!(args, [r#"/select,"C:\My Photos\a.jpg""#]);
     }
 
     #[test]

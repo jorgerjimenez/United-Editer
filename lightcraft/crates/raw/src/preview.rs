@@ -1,5 +1,7 @@
 //! Embedded preview extraction: the largest baseline/progressive JPEG stored in a TIFF-based raw (IFD strips
-//! with JPEG compression, `JPEGInterchangeFormat` pointers in any IFD, Nikon/others' maker-note preview IFDs).
+//! with JPEG compression, `JPEGInterchangeFormat` pointers in any IFD, Nikon/others' maker-note preview IFDs),
+//! or a DNG 1.7 JPEG XL preview IFD stored as a single tile/strip (a standalone `.jxl` file, as the spec
+//! recommends for previews).
 
 use lightcraft_tiff::image::chunk_bytes;
 use lightcraft_tiff::tags as t;
@@ -29,6 +31,21 @@ pub fn embedded_preview_color_space(bytes: &[u8]) -> Option<PreviewColorSpace> {
     }
 }
 
+/// Whether the camera optimised its embedded JPEG's dynamic range with local tone mapping that the raw data doesn't
+/// carry: Sony's Dynamic Range Optimizer (maker note `0xb025`, see `vendor::arw`). Such a JPEG is brighter in its
+/// darker regions than the raw developed with the camera's global tone curve. `Some(false)` when the file says it
+/// was off, `None` when it doesn't say (other makers, notes without the tag, undocumented values).
+pub fn embedded_preview_dynamic_range_optimized(bytes: &[u8]) -> Option<bool> {
+    let tiff = Tiff::parse(bytes).ok()?;
+    let make = tiff.ifds.first()?.string(t::MAKE)?;
+    if !make.trim().to_ascii_uppercase().starts_with("SONY") {
+        return None;
+    }
+    let e = tiff.exif()?.get(t::MAKER_NOTE)?;
+    let mn = makernote::parse_makernote(bytes, e.offset, e.count() as u64, tiff.order, &make)?;
+    crate::vendor::arw::dynamic_range_optimizer(&mn)
+}
+
 /// Whether `b` looks like a displayable (DCT) JPEG: SOI, and the first SOF marker is not lossless.
 fn is_dct_jpeg(b: &[u8]) -> bool {
     if b.len() < 4 || b[0] != 0xff || b[1] != 0xd8 {
@@ -54,6 +71,11 @@ fn is_dct_jpeg(b: &[u8]) -> bool {
         i += 2 + len;
     }
     false
+}
+
+/// Whether `b` is a JPEG XL file: a bare codestream or the ISO-BMFF container's signature box.
+fn is_jxl(b: &[u8]) -> bool {
+    b.starts_with(&[0xff, 0x0a]) || b.starts_with(&[0, 0, 0, 0x0c, b'J', b'X', b'L', b' ', 0x0d, 0x0a, 0x87, 0x0a])
 }
 
 fn candidates<'a>(data: &'a [u8], ifd: &Ifd, base: u64, out: &mut Vec<&'a [u8]>) {
@@ -83,9 +105,20 @@ fn candidates<'a>(data: &'a [u8], ifd: &Ifd, base: u64, out: &mut Vec<&'a [u8]>)
             out.push(s);
         }
     }
+    // a rendered (RGB or grey, never CFA/LinearRaw/mask) JPEG XL preview in one chunk
+    if ifd.u16(t::COMPRESSION) == Some(t::compression::JPEG_XL)
+        && matches!(ifd.u16(t::PHOTOMETRIC), Some(t::photometric::BLACK_IS_ZERO | t::photometric::RGB))
+        && let Ok(info) = ifd.image()
+        && let [chunk] = info.chunks(data.len() as u64).as_slice()
+        && let Some(s) = chunk_bytes(data, chunk)
+        && is_jxl(s)
+    {
+        out.push(s);
+    }
 }
 
-/// The largest embedded JPEG preview, if any.
+/// The largest embedded preview, if any: a JPEG, or (DNG 1.7) a JPEG XL file — both decode with
+/// `lightcraft_codecs::decode`.
 pub fn embedded_preview(bytes: &[u8]) -> Option<Vec<u8>> {
     if bytes.starts_with(b"FUJIFILMCCD-RAW") {
         let j = crate::vendor::raf::header(bytes).ok()?.jpeg?;
@@ -121,7 +154,11 @@ pub fn embedded_preview(bytes: &[u8]) -> Option<Vec<u8>> {
     if let Some(p) = crate::vendor::orf::preview(bytes) {
         found.push(p);
     }
-    let best = found.into_iter().filter(|s| is_dct_jpeg(s)).max_by_key(|s| s.len()).map(|s| trim_eoi(s).to_vec());
+    let best = found
+        .into_iter()
+        .filter(|s| is_dct_jpeg(s) || is_jxl(s))
+        .max_by_key(|s| s.len())
+        .map(|s| if is_jxl(s) { s.to_vec() } else { trim_eoi(s).to_vec() });
     // a TIFF raw we can't decode whose preview no tag points to (Leaf MOS, Epson ERF)
     best.or_else(|| format.filter(|f| !f.is_supported()).and_then(|_| scan_for_jpeg(bytes)))
 }

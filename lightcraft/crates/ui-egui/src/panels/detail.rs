@@ -187,10 +187,14 @@ pub(crate) fn navigate_gesture(app: &mut LightcraftApp, ui: &mut egui::Ui, resp:
     true
 }
 
-/// The largest texture the GPU behind `ctx` takes (egui reports it; 2048 when it doesn't, the
+/// The largest texture the GPU behind `ctx` takes (egui reports it; 2048 until it does, the
 /// smallest limit WebGL devices have).
+///
+/// The value egui keeps, not the frame's raw input: a native host (egui-winit) reports the limit
+/// in the first frame's input only, so the raw value is `None` from the second frame on
+/// (issue #652: every window render was cut to 2048 px, with blurry strips beside it).
 pub(crate) fn texture_side(ctx: &egui::Context) -> usize {
-    ctx.input(|i| i.raw.max_texture_side).unwrap_or(2048)
+    ctx.input(|i| i.max_texture_side)
 }
 
 /// The photo's own pixels as it is shown: its size after the crop and the user's rotation (what
@@ -631,9 +635,25 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         filter_pill(app, ui, canvas);
     }
     if app.ui.face_boxes {
-        match region_overlay(ui, &p, &map, &photo, d.orientation) {
+        // a name box left open on another photo is dropped
+        if app.ui.name_edit.as_ref().is_some_and(|e| e.photo != id.0) {
+            app.ui.name_edit = None;
+        }
+        let hints = super::faces::hints_for(app, id.0);
+        let people = if app.ui.name_edit.is_some() { app.caches.person_names(&app.session.catalog) } else { Default::default() };
+        // while the name box is open and recognition is not set up, the box offers the next step
+        let setup = if app.ui.name_edit.is_some() { super::faces::setup(app, ui.ctx()) } else { super::faces::Setup::Running };
+        match region_overlay(ui, &p, &map, &photo, d.orientation, hints.as_deref(), &people, &mut app.ui.name_edit, setup) {
+            Some(RegionEdit::SetUp) => {
+                app.ui.name_edit = None;
+                super::faces::take_step(app, ui.ctx(), setup);
+            }
             Some(RegionEdit::Remove(index)) => {
                 let _ = app.run("photo.removeRegion", json!({"id": id.0, "index": index}));
+            }
+            Some(RegionEdit::Name(index, name)) => {
+                app.ui.name_edit = None;
+                let _ = app.run("faces.setName", json!({"id": id.0, "index": index, "name": name}));
             }
             Some(RegionEdit::Resize(index, r)) => {
                 let _ = app.run("photo.setRegion", json!({"id": id.0, "index": index, "rect": {"x0": r.x0, "y0": r.y0, "x1": r.x1, "y1": r.y1}}));
@@ -740,6 +760,10 @@ enum RegionEdit {
     Remove(usize),
     /// A handle drag ended: the region's new box (normalized, upright frame).
     Resize(usize, lightcraft_geom::Rect),
+    /// A name was typed or picked for the face.
+    Name(usize, String),
+    /// The name box's offer to set up face recognition was pressed.
+    SetUp,
 }
 
 /// Handles of a box: (x, y) as fractions of its width and height, and the cursor they show.
@@ -765,6 +789,10 @@ fn region_overlay(
     map: &CanvasMap,
     photo: &lightcraft_catalog::Photo,
     orient: lightcraft_geom::Orientation,
+    hints: Option<&super::faces::Hints>,
+    people: &[String],
+    editing: &mut Option<crate::state::NameEdit>,
+    setup: super::faces::Setup,
 ) -> Option<RegionEdit> {
     let t = Tokens::get(p.ctx());
     let clip = p.clip_rect();
@@ -840,9 +868,20 @@ fn region_overlay(
                 edit = Some(RegionEdit::Remove(index));
             }
         }
-        let Some(name) = &r.name else { continue };
+        // what the label says: the name, a guess to confirm ("Jane Doe?"), or on hover an invitation to name the face
+        let is_face = r.kind == lightcraft_meta::RegionKind::Face;
+        let hint = hints.and_then(|h| h.by_index.get(&index));
+        let hovered = pointer.is_some_and(|h| rect.expand(3.0).contains(h));
+        let editing_this = editing.as_ref().is_some_and(|e| e.photo == photo.id.0 && e.index == index);
+        let (text, text_color, fill_alpha, invitation) = match (&r.name, hint.and_then(|h| h.suggestion.as_ref())) {
+            (Some(n), _) => (n.clone(), Color32::from_gray(225), 235, false),
+            (None, Some((n, _))) if is_face => (format!("{n}?"), Color32::from_gray(185), 200, false),
+            (None, None) if is_face && live.is_none() => ("Add name".to_string(), Color32::from_gray(150), 190, true),
+            _ => continue,
+        };
         // the name in a dark label with a caret, centred above the box (below it when there is no room)
-        let g = p.layout_no_wrap(name.clone(), t.font(13.0), Color32::from_gray(225));
+        let name = &text;
+        let g = p.layout_no_wrap(name.clone(), t.font(13.0), text_color);
         let (pad, caret) = (vec2(14.0, 7.0), 5.0);
         let size = g.size() + pad * 2.0;
         let above = rect.top() - caret - size.y >= clip.top();
@@ -853,12 +892,34 @@ fn region_overlay(
         };
         let left = (rect.center().x - size.x / 2.0).clamp(clip.left(), (clip.right() - size.x).max(clip.left()));
         let label = Rect::from_min_size(pos2(left, top), size);
-        let fill = Color32::from_rgba_unmultiplied(56, 56, 56, 235);
+        // the invitation shows while the pointer is on the box *or on the label* (and the gap between), so it can be reached
+        if invitation && !(hovered || editing_this || pointer.is_some_and(|h| rect.union(label).expand(3.0).contains(h))) {
+            continue;
+        }
+        let fill = Color32::from_rgba_unmultiplied(56, 56, 56, fill_alpha);
         p.rect_filled(label, 3.0, fill);
         p.rect_stroke(label, 3.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Inside);
         let cx = rect.center().x.clamp(label.left() + caret + 4.0, label.right() - caret - 4.0);
         p.add(egui::Shape::convex_polygon(vec![pos2(cx - caret, base), pos2(cx + caret, base), pos2(cx, tip)], fill, Stroke::NONE));
-        p.galley(label.min + pad, g, Color32::from_gray(225));
+        p.galley(label.min + pad, g, text_color);
+        if is_face && live.is_none() {
+            // a click on the label opens the name box, filled with the name or the guess
+            let resp = ui.interact(label, egui::Id::new(("region-label", index)), Sense::click());
+            register(ui.ctx(), format!("regionLabel:{index}"), label);
+            if resp.on_hover_text("Click to name this face").clicked() {
+                let start = r.name.clone().or_else(|| hint.and_then(|h| h.suggestion.as_ref().map(|(n, _)| n.clone()))).unwrap_or_default();
+                *editing = Some(crate::state::NameEdit { photo: photo.id.0, index, text: start, fresh: true });
+            }
+        }
+        if editing_this && let Some(e) = editing.as_mut() {
+            let candidates = hint.map(|h| h.candidates.as_slice()).unwrap_or(&[]);
+            match super::faces::name_editor(ui.ctx(), pos2(label.left(), rect.bottom() + 8.0), e, candidates, people, setup) {
+                super::faces::Editor::Submit(name) => edit = Some(RegionEdit::Name(index, name)),
+                super::faces::Editor::Setup => edit = Some(RegionEdit::SetUp),
+                super::faces::Editor::Cancel => *editing = None,
+                super::faces::Editor::Open => {}
+            }
+        }
     }
     edit
 }
@@ -1022,6 +1083,9 @@ pub(crate) fn view_overlay(app: &LightcraftApp, d: &DevelopSettings) -> lightcra
     let edit = app.ui.right == RightPanel::Edit;
     if edit && app.ui.point_color_visualize && app.ui.flyout_open("pointColor") && app.ui.point_color < d.point_colors.len() {
         return Overlay::PointColorRange(app.ui.point_color as u8);
+    }
+    if edit && app.ui.hdr_visualize && d.hdr.enabled {
+        return Overlay::HdrRange;
     }
     Overlay::None
 }
@@ -1191,17 +1255,45 @@ fn crop_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Respons
         let s = to_straight(n, d.crop.geometry.angle, frame);
         d.crop.geometry.rect.contains(Point::new(s.x.clamp(-1.0, 2.0), s.y))
     };
-    if let Some(hq) = resp.hover_pos() {
-        let near = handles.iter().position(|h| h.distance(hq) < 12.0);
-        ui.ctx().set_cursor_icon(match near {
+    // a crop drag cut short (the tool closed before the release) leaves its gesture behind: with no
+    // button held it is over
+    if matches!(app.gesture, Some(Gesture::CropRotate { .. } | Gesture::CropHandle { .. }))
+        && !resp.drag_stopped()
+        && !ui.input(|i| i.pointer.any_down())
+    {
+        app.gesture = None;
+    }
+    // while rotating, the pointer may leave the canvas: it still shows rotation and the angle
+    let rotating = matches!(app.gesture, Some(Gesture::CropRotate { .. }));
+    let pointer = resp.hover_pos().or_else(|| if rotating { ui.input(|i| i.pointer.latest_pos()) } else { None });
+    // with ⌘ held a drag draws a level line (the straighten crosshair, set above), not a rotation
+    let straightening = !rotating && ui.input(|i| i.modifiers.command);
+    if let Some(hq) = pointer.filter(|_| !straightening) {
+        // a move or resize drag keeps its pointer wherever it goes, even past the box
+        let held = match app.gesture {
+            Some(Gesture::CropHandle { handle, .. }) => Some(usize::from(handle)),
+            _ => None,
+        };
+        let near = held.or_else(|| handles.iter().position(|h| h.distance(hq) < 12.0)).filter(|_| !rotating);
+        let cursor = match near {
             Some(0 | 2) => egui::CursorIcon::ResizeNwSe,
             Some(1 | 3) => egui::CursorIcon::ResizeNeSw,
             Some(4 | 6) => egui::CursorIcon::ResizeVertical,
-            Some(_) => egui::CursorIcon::ResizeHorizontal,
-            None if inside(hq) => egui::CursorIcon::Move,
-            None => egui::CursorIcon::Alias,
-        });
+            Some(5 | 7) => egui::CursorIcon::ResizeHorizontal,
+            // 8: the whole box
+            Some(_) => egui::CursorIcon::Move,
+            None if inside(hq) && !rotating => egui::CursorIcon::Move,
+            // a drag here rotates: no system cursor shows that, so draw a curved double arrow
+            None => {
+                rotate_cursor(ui, hq);
+                egui::CursorIcon::None
+            }
+        };
+        ui.ctx().set_cursor_icon(cursor);
     }
+    // the angle next to the pointer, drawn once this frame's rotation is applied (below)
+    let readout_at = pointer.filter(|_| rotating);
+    let mut shown_angle = d.crop.geometry.angle;
     // double-click inside the crop box applies the crop (same as Return / Done)
     if resp.double_clicked()
         && let Some(q) = resp.interact_pointer_pos()
@@ -1242,7 +1334,8 @@ fn crop_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Respons
                 let c = map.screen(Point::new(0.5, 0.5));
                 let a = (q - c).angle();
                 let ang = (start_angle + (a - a0).to_degrees() as f64).clamp(-45.0, 45.0);
-                let _ = app.run("crop.straighten", json!({"angle": (ang * 100.0).round() / 100.0}));
+                shown_angle = (ang * 100.0).round() / 100.0;
+                let _ = app.run("crop.straighten", json!({"angle": shown_angle}));
             }
             _ => {}
         }
@@ -1251,7 +1344,64 @@ fn crop_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Respons
         app.gesture = None;
         let _ = app.run("develop.endInteraction", json!({}));
     }
+    if let Some(at) = readout_at {
+        // the canvas (the loupe's own rect), not the photo: rotating happens in the margin around it
+        angle_readout(ui, at, shown_angle, resp.rect);
+    }
     let _ = id;
+}
+
+/// The crop angle as the rotation readout shows it: like the Straighten value, in degrees.
+pub(crate) fn crop_angle_label(angle: f64) -> String {
+    let shown =
+        lightcraft_develop::controls::find("crop.angle").map_or_else(|| format!("{angle:.2}"), |spec| crate::widgets::shown_value(spec, angle));
+    // the slider's format turns a rounded −0.00 into "0": every zero reads "0.00", the angle's
+    // usual two decimals
+    let shown = if shown == "0" { "0.00".to_string() } else { shown };
+    format!("{shown}°")
+}
+
+/// Where the angle readout of `size` goes for a pointer `at`: below right of it, flipped to the
+/// left / above where that would leave `bounds`, then kept inside them.
+pub(crate) fn readout_rect(at: Pos2, size: egui::Vec2, bounds: Rect) -> Rect {
+    // without a real pointer or bounds (NaN, an empty rect) there is nothing to keep it in; and
+    // f32::clamp panics on NaN, so only finite numbers get there
+    if !at.is_finite() || !bounds.is_finite() || !bounds.is_positive() {
+        let at = if at.is_finite() { at } else { bounds.min.max(Pos2::ZERO) };
+        let at = if at.is_finite() { at } else { Pos2::ZERO };
+        return Rect::from_min_size(at + vec2(18.0, 14.0), size);
+    }
+    let x = if at.x + 18.0 + size.x > bounds.right() { at.x - 18.0 - size.x } else { at.x + 18.0 };
+    let y = if at.y + 14.0 + size.y > bounds.bottom() { at.y - 14.0 - size.y } else { at.y + 14.0 };
+    let x = x.clamp(bounds.left(), (bounds.right() - size.x).max(bounds.left()));
+    let y = y.clamp(bounds.top(), (bounds.bottom() - size.y).max(bounds.top()));
+    Rect::from_min_size(pos2(x, y), size)
+}
+
+/// On top of everything (the tooltip layer), so neither the photo nor a panel covers it.
+fn top_painter(ui: &egui::Ui, name: &'static str) -> egui::Painter {
+    ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new(name)))
+}
+
+/// The rotation pointer: a curved double arrow on a dark disc, so it reads over any photo.
+fn rotate_cursor(ui: &egui::Ui, at: Pos2) {
+    let p = top_painter(ui, "crop-rotate-cursor");
+    let r = Rect::from_center_size(at, vec2(22.0, 22.0));
+    p.circle_filled(at, 12.0, Color32::from_black_alpha(150));
+    crate::icons::paint(&p, r.shrink(2.0), crate::icons::Icon::RotateDrag, Color32::WHITE);
+    register(ui.ctx(), "cropRotateCursor", r);
+}
+
+/// While rotating: the angle, next to the pointer, kept inside `bounds` (the canvas): on the
+/// pointer's other side when it would run past an edge.
+fn angle_readout(ui: &egui::Ui, at: Pos2, angle: f64, bounds: Rect) {
+    let t = Tokens::get(ui.ctx());
+    let p = top_painter(ui, "crop-angle-readout");
+    let galley = p.layout_no_wrap(crop_angle_label(angle), t.font(12.5), Color32::WHITE);
+    let rect = readout_rect(at, galley.size() + vec2(12.0, 6.0), bounds);
+    p.rect_filled(rect, 4.0, Color32::from_black_alpha(170));
+    p.galley(rect.min + vec2(6.0, 3.0), galley, Color32::WHITE);
+    register(ui.ctx(), "cropAngleReadout", rect);
 }
 
 /// Guided Upright: draw up to four guides along lines that should be vertical or horizontal. Guides are
@@ -1375,6 +1525,22 @@ fn moved_shape(shape: &MaskShape, handle: u8, dn: Point, at: Point, map: &Canvas
         }
         s => s,
     }
+}
+
+/// Hit the geometric ellipse, independently of feather/inversion. Radii use long-edge units,
+/// so undo the same scaling and rotation used to draw its outline before testing containment.
+fn radial_body_contains(shape: &MaskShape, at: Point, map: &CanvasMap) -> bool {
+    let MaskShape::Radial { center, rx, ry, angle, .. } = shape else { return false };
+    if !rx.is_finite() || !ry.is_finite() || *rx <= 0.0 || *ry <= 0.0 {
+        return false;
+    }
+    let l = frame_long_norm(map);
+    let dx = (at.x - center.x) / l.0;
+    let dy = (at.y - center.y) / l.1;
+    let (s, co) = angle.to_radians().sin_cos();
+    let x = (dx * co + dy * s) / rx;
+    let y = (-dx * s + dy * co) / ry;
+    x * x + y * y <= 1.0
 }
 
 /// The Masking tool on the photo: outlines and handles of the selected mask, a pin per mask
@@ -1551,8 +1717,14 @@ fn mask_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Respons
         && let Some(q) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
         let grip = hit(q).map(|(m, c, h, _)| (m, c, h)).or_else(|| {
-            // anywhere on the photo drags the selected linear gradient
             let m = d.masks.iter().find(|m| Some(m.id) == active)?;
+            // Handles take precedence; otherwise grab the selected radial component under
+            // the press, including components after the first in compound masks.
+            let at = map.norm(q);
+            if let Some(ci) = m.components.iter().position(|c| radial_body_contains(&c.shape, at, map)) {
+                return Some((m.id, ci, 0));
+            }
+            // anywhere on the photo drags the selected linear gradient
             matches!(m.components.first()?.shape, MaskShape::Linear { .. }).then_some((m.id, 0, 0))
         });
         if let Some((mask, comp, handle)) = grip
@@ -1971,7 +2143,23 @@ fn straighten_overlay(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::R
 
 #[cfg(test)]
 mod tests {
-    use super::film_label;
+    use super::{film_label, texture_side};
+
+    /// Issue #652: a native host reports the GPU's texture limit in the first frame's input only.
+    /// The loupe must still know it in every later frame (it read the raw input, found nothing and
+    /// cut every window render to 2048 px).
+    #[test]
+    fn the_texture_limit_outlives_the_frame_it_was_reported_in() {
+        let ctx = egui::Context::default();
+        assert_eq!(texture_side(&ctx), 2048, "until the host says: the smallest limit there is");
+        let mut seen = Vec::new();
+        for reported in [Some(8192), None, None] {
+            let raw = egui::RawInput { max_texture_side: reported, ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| seen.push(texture_side(ui.ctx())));
+            out.textures_delta.clear();
+        }
+        assert_eq!(seen, [8192, 8192, 8192]);
+    }
 
     #[test]
     fn film_labels_cut_on_characters_not_bytes() {
