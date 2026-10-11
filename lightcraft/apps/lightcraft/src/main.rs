@@ -183,6 +183,23 @@ fn load_prefs(in_memory: bool) -> (Option<UiState>, Option<String>, bool) {
     load_prefs_at(&path, !in_memory)
 }
 
+/// Compatibility recovery is limited to persisted docking, not runtime UiState commands.
+fn decode_saved_ui(bytes: &[u8]) -> Result<(UiState, bool), String> {
+    let mut saved: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    let fields = saved.as_object_mut().ok_or("settings must be an object")?;
+    let recovered =
+        fields.get("docking").is_some_and(|value| match serde_json::from_value::<Option<lightcraft_ui_egui::docking::Workspace>>(value.clone()) {
+            Ok(Some(workspace)) => workspace.validate().is_err(),
+            Ok(None) => false,
+            Err(_) => true,
+        });
+    if recovered {
+        fields.remove("docking");
+    }
+    let ui = serde_json::from_value(saved).map_err(|error| error.to_string())?;
+    Ok((ui, recovered))
+}
+
 fn load_prefs_at(path: &std::path::Path, set_aside_damaged: bool) -> (Option<UiState>, Option<String>, bool) {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
@@ -192,13 +209,15 @@ fn load_prefs_at(path: &std::path::Path, set_aside_damaged: bool) -> (Option<UiS
             return (None, Some(msg), true);
         }
     };
-    match serde_json::from_slice::<UiState>(&bytes).map_err(|error| error.to_string()).and_then(|ui| {
-        if let Some(workspace) = &ui.docking {
-            workspace.validate()?;
+    match decode_saved_ui(&bytes) {
+        Ok((ui, false)) => (Some(ui.sanitized()), None, false),
+        Ok((ui, true)) => {
+            let msg = format!(
+                "The saved panel layout in {} couldn't be restored. Other settings were loaded; the original file is preserved and settings won't be saved this session.",
+                path.display()
+            );
+            (Some(ui.sanitized()), Some(msg), true)
         }
-        Ok(ui)
-    }) {
-        Ok(ui) => (Some(ui.sanitized()), None, false),
         Err(e) if !set_aside_damaged => {
             let msg = format!("The app settings ({}) are damaged ({e}). Defaults are used; nothing is saved in this session.", path.display());
             (None, Some(msg), true)
@@ -939,6 +958,36 @@ mod tests {
             restored_app.ui.docking.as_ref().unwrap().layout.floating.iter().find(|g| g.panels.contains(&Panel::Tools)).unwrap().rect,
             [70.0, 80.0, 310.0, 500.0]
         );
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn future_docking_preserves_library_settings_and_the_original_preferences_file() {
+        let d = dir("future-docking");
+        let path = d.join("ui.json");
+        let mut ui = UiState { thumb_size: 210.0, filmstrip: false, ..Default::default() };
+        ui.settings.library_path = "/Volumes/Photos/Synthetic Library".into();
+        for docking in [serde_json::json!({"layout":{"root":{"FutureLayout":{}}}}), serde_json::json!(false)] {
+            let mut saved = serde_json::to_value(&ui).unwrap();
+            saved["docking"] = docking;
+            assert!(serde_json::from_value::<UiState>(saved.clone()).is_err(), "runtime state parsing stays strict");
+            let bytes = serde_json::to_vec(&saved).unwrap();
+            for set_aside in [false, true] {
+                std::fs::write(&path, &bytes).unwrap();
+                let (loaded, warning, keep) = load_prefs_at(&path, set_aside);
+                let loaded = loaded.unwrap();
+                assert_eq!(loaded.settings.library_path, ui.settings.library_path);
+                assert_eq!(loaded.thumb_size, ui.thumb_size);
+                assert!(!loaded.filmstrip);
+                assert!(loaded.docking.is_none());
+                assert!(warning.unwrap().contains("Other settings were loaded"));
+                assert!(keep);
+                let mut writer = PrefsWriter { path: Some(path.clone()), keep_file: keep, ..Default::default() };
+                writer.save_ui(&loaded, false).unwrap();
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+                assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1, "a future layout does not rename or replace the settings file");
+            }
+        }
         std::fs::remove_dir_all(d).unwrap();
     }
 
