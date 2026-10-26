@@ -1,0 +1,96 @@
+# Windows builds and tests for both imported apps (phase 0 baseline).
+#
+# `build` produces the downloadable zips (Actions run page → Artifacts). `test` runs each
+# workspace's own test suite on Windows. They are separate jobs so a slow or failing test run
+# never holds back a build Jorge can try on the laptop.
+name: Windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  scripts:
+    name: Check PowerShell scripts
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # Parse every script with the Windows PowerShell 5.1 that ships with Windows 11.
+      - name: Parse tools/*.ps1
+        shell: powershell
+        run: |
+          $bad = 0
+          Get-ChildItem tools -Filter *.ps1 | ForEach-Object {
+            $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errs)
+            if ($errs) { $errs | ForEach-Object { Write-Host "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }; $bad++ }
+          }
+          if ($bad) { exit 1 }
+
+  build:
+    name: Build ${{ matrix.app }}
+    runs-on: windows-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [lightcraft, photocraft]
+    defaults:
+      run:
+        working-directory: ${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.app }}
+          key: build
+      - name: Build app and CLI (release)
+        shell: pwsh
+        run: cargo build --release --locked -p ${{ matrix.app }} -p ${{ matrix.app }}-cli
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "dist/${{ matrix.app }}"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item "target/release/${{ matrix.app }}.exe", "target/release/${{ matrix.app }}-cli.exe" $out
+          "${{ github.sha }}" | Out-File "$out/COMMIT.txt" -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.app }}-windows-x64
+          path: ${{ matrix.app }}/dist/${{ matrix.app }}
+          if-no-files-found: error
+          retention-days: 30
+
+  test:
+    name: Test ${{ matrix.app }}
+    runs-on: windows-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [lightcraft, photocraft]
+    defaults:
+      run:
+        working-directory: ${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.app }}
+          key: test
+      - name: Test workspace
+        shell: pwsh
+        run: cargo test --workspace --locked --no-fail-fast
