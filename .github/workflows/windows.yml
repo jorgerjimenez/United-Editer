@@ -56,6 +56,7 @@ jobs:
         with:
           workspaces: ${{ matrix.app }}
           key: build
+          cache-on-failure: true
       - name: Build app and CLI (release)
         shell: pwsh
         run: cargo build --release --locked -p ${{ matrix.app }} -p ${{ matrix.app }}-cli
@@ -91,6 +92,26 @@ jobs:
         with:
           workspaces: ${{ matrix.app }}
           key: test
+          cache-on-failure: true
+      # Failing tests are surfaced as one annotation (readable from the API and the run page)
+      # and in the job summary; the full output is uploaded as an artifact.
       - name: Test workspace
         shell: pwsh
-        run: cargo test --workspace --locked --no-fail-fast
+        run: |
+          cargo test --workspace --locked --no-fail-fast 2>&1 | Tee-Object -FilePath test-output.txt
+          $code = $LASTEXITCODE
+          $hits = Select-String -Path test-output.txt -Pattern '^test .+ \.\.\. FAILED$', 'panicked at', '^error(\[E\d+\])?:', '^test result: FAILED' |
+            ForEach-Object { $_.Line.Trim() } | Select-Object -Unique -First 80
+          if ($hits) {
+            "### ${{ matrix.app }}: failing tests`n" + '```' + "`n" + ($hits -join "`n") + "`n" + '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            $msg = (($hits | ForEach-Object { $_.Replace('%', '%25') }) -join "%0A")
+            Write-Host "::error title=${{ matrix.app }} tests::$msg"
+          }
+          exit $code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ matrix.app }}-test-output
+          path: ${{ matrix.app }}/test-output.txt
+          if-no-files-found: ignore
+          retention-days: 14
