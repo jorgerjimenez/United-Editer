@@ -1,15 +1,19 @@
 [package]
-name = "xtask"
-version.workspace = true
+name = "lightcraft-xtask"
+version = "0.7.1"
 edition.workspace = true
 license.workspace = true
 publish = false
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
 
 [lints]
 workspace = true
 
 [dependencies]
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 # corpus download checksums
 sha2 = { workspace = true }
 # precompressed web bundle (`cargo xtask web`); pure Rust

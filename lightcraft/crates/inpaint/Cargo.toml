@@ -1,6 +1,6 @@
 [package]
 name = "lightcraft-inpaint"
-version.workspace = true
+version = "0.7.1"
 edition.workspace = true
 license.workspace = true
 description = "Content-aware hole filling: PatchMatch-based patch completion and membrane fill (L1). Ported from PhotoCraft"

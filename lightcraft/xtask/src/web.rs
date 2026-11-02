@@ -76,7 +76,7 @@ fn copy_chinese_font(out: &Path) -> Result<bool, String> {
 
 /// The `wasm-bindgen` version pinned in Cargo.lock (the CLI must match it exactly).
 fn locked_bindgen_version() -> Result<String, String> {
-    let lock = std::fs::read_to_string(root().join("Cargo.lock")).map_err(|e| format!("Cargo.lock: {e}"))?;
+    let lock = std::fs::read_to_string(crate::workspace_root().join("Cargo.lock")).map_err(|e| format!("Cargo.lock: {e}"))?;
     let mut lines = lock.lines();
     while let Some(l) = lines.next() {
         if l.trim() == "name = \"wasm-bindgen\""
@@ -300,7 +300,7 @@ mod tests {
         // proc-macros, `deps/`, `build/`, `.fingerprint/`) to `<target>/<profile>/`, so the bundle
         // must not live in a profile directory or `packaging/web/package.sh` would zip them
         // (issue #793).
-        let manifest = std::fs::read_to_string(root().join("Cargo.toml")).unwrap();
+        let manifest = std::fs::read_to_string(crate::workspace_root().join("Cargo.toml")).unwrap();
         let is_profile = |name: &str| {
             let header = format!("[profile.{name}]");
             manifest.lines().any(|l| l.trim() == header)

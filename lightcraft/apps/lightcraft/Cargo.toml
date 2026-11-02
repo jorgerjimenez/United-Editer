@@ -1,6 +1,6 @@
 [package]
 name = "lightcraft"
-version.workspace = true
+version = "0.7.1"
 edition.workspace = true
 license.workspace = true
 publish = false
@@ -25,7 +25,7 @@ lightcraft-codecs = { workspace = true }
 lightcraft-raster = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "glow", "accesskit", "wayland", "x11"] }
 egui = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 # probing the window's renderer before it opens (`window_gpu`)
 pollster = { workspace = true }
 log = { workspace = true }

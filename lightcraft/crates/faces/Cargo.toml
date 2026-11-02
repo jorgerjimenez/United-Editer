@@ -1,6 +1,6 @@
 [package]
 name = "lightcraft-faces"
-version.workspace = true
+version = "0.7.1"
 edition.workspace = true
 license.workspace = true
 description = "LightCraft faces (L1): bounded ONNX CPU inference, face-model manifests, validation and detection"
@@ -17,7 +17,7 @@ ndarray = { version = "=0.17.2", default-features = false, features = ["std"] }
 matrixmultiply = { version = "=0.3.11", default-features = false, features = ["std", "avx512"] }
 web-time = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 

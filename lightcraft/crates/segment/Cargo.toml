@@ -1,6 +1,6 @@
 [package]
 name = "lightcraft-segment"
-version.workspace = true
+version = "0.7.1"
 edition.workspace = true
 license = "Apache-2.0"
 description = "LightCraft segmentation: SAM 3 (Segment Anything with Concepts) inference in pure Rust (L3)"
@@ -10,7 +10,7 @@ workspace = true
 
 [dependencies]
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 thiserror = { workspace = true }
 log = { workspace = true }
 

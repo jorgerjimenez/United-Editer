@@ -1,6 +1,6 @@
 [package]
 name = "lightcraft-codecs"
-version.workspace = true
+version = "0.7.1"
 edition.workspace = true
 license.workspace = true
 description = "LightCraft standard image codecs: sniffing, decode to linear light, ICC, encoders (L1)"
@@ -17,7 +17,7 @@ serde = { workspace = true }
 bytemuck = { workspace = true }
 thiserror = { workspace = true }
 rayon = { workspace = true, optional = true }
-image = { workspace = true, features = ["gif", "bmp"] }
+image = { workspace = true, features = ["gif", "bmp", "png", "jpeg", "tiff", "webp"] }
 zune-jpeg = { workspace = true }
 zune-core = { workspace = true }
 jpeg-decoder = { workspace = true }
