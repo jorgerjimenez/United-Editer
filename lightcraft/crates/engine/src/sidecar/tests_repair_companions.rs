@@ -4,6 +4,18 @@ use crate::rename::{MoveFs, RealFs};
 use lightcraft_catalog::{Op, Photo, Source};
 use serde_json::json;
 
+/// Whether `a` and `b` name the same file the way the host's file system sees it: on Windows
+/// `a.jpg.XMP` and `a.jpg.xmp`, or `/` and `\\`, are one file, so an injected fault for one
+/// spelling must hit the other too.
+fn same_file_name(a: &Path, b: &Path) -> bool {
+    if cfg!(windows) {
+        let fold = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
+        fold(a) == fold(b)
+    } else {
+        a == b
+    }
+}
+
 struct Faults(Vec<PathBuf>);
 impl MoveFs for Faults {
     fn exists(&self, p: &Path) -> bool {
@@ -16,7 +28,7 @@ impl MoveFs for Faults {
         RealFs.same_file(a, b)
     }
     fn rename_no_replace(&self, a: &Path, b: &Path) -> std::io::Result<()> {
-        if self.0.iter().any(|p| p == a) {
+        if self.0.iter().any(|p| same_file_name(p, a)) {
             Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected partial move"))
         } else {
             RealFs.rename_no_replace(a, b)

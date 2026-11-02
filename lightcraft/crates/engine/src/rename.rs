@@ -1196,7 +1196,7 @@ pub(crate) mod tests {
             self.idx(a).is_some() && self.idx(a) == self.idx(b)
         }
         fn rename_no_replace(&self, a: &Path, b: &Path) -> std::io::Result<()> {
-            if self.fail.borrow().iter().any(|f| Self::norm(a).contains(f.as_str())) {
+            if self.fail.borrow().iter().any(|f| Self::norm(a).contains(&f.replace('\\', "/"))) {
                 return Err(std::io::Error::other("injected failure"));
             }
             if self.exists(b) {
@@ -1207,7 +1207,7 @@ pub(crate) mod tests {
             Ok(())
         }
         fn copy_no_replace(&self, a: &Path, b: &Path) -> std::io::Result<()> {
-            if self.fail.borrow().iter().any(|f| Self::norm(a).contains(f.as_str())) {
+            if self.fail.borrow().iter().any(|f| Self::norm(a).contains(&f.replace('\\', "/"))) {
                 return Err(std::io::Error::other("injected failure"));
             }
             if self.exists(b) {
@@ -1293,7 +1293,7 @@ pub(crate) mod tests {
                     } else {
                         serde_json::json!({"path": from, "into": root.join("Archive")})
                     };
-                    let to = if command == "folder.rename" { root.join("Holiday") } else { root.join("Archive/Trip") };
+                    let to = if command == "folder.rename" { root.join("Holiday") } else { root.join("Archive").join("Trip") };
                     let before = s.catalog.to_snapshot();
                     let history = (s.undo.len(), s.redo.len());
                     assert!(s.execute(command, &params).is_err());

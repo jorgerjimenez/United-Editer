@@ -114,7 +114,11 @@ fn size_changing_rotation_preview_is_visible_and_preserves_the_panned_center() {
         let rect = photocraft_ui_egui::rulers::content_rect(h.state(), h.state().last_canvas_rect);
         let expected_y = rect.center().y + (height as f32 / 2.0 - center[1]) * zoom;
         let actual_y = (top + bottom) as f32 / 2.0;
-        assert!((actual_y - expected_y).abs() < 3.0, "{degrees}°: preview moved the panned image center from {expected_y} to {actual_y}");
+        assert!(
+            (actual_y - expected_y).abs() < 3.0,
+            "{width}x{height}, {degrees}°: preview moved the panned image center from {expected_y} to {actual_y} (blue rows {top}..{bottom}, {count} px, canvas {rect:?}, max texture side {})",
+            h.ctx.input(|i| i.max_texture_side)
+        );
         h.get_by_label("Cancel").click();
         h.run_steps(4);
     }
