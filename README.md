@@ -7,16 +7,20 @@ frequency separation and retouching are stored as instructions, not pixels.
 
 Personal fork, built in sessions. Not affiliated with the upstream projects.
 
-## Layout (phase 0)
+## Layout (phase 1)
 
 | Path | What | Upstream |
 | --- | --- | --- |
-| `lightcraft/` | LightCraft 0.7.1, unchanged, full history | [storytold/lightcraft](https://github.com/storytold/lightcraft) via `jorgerjimenez/lightcraft_901220` |
-| `photocraft/` | PhotoCraft 0.8.0, unchanged, full history | [storytold/photocraft](https://github.com/storytold/photocraft) via `jorgerjimenez/photocraft_901220` |
+| `lightcraft/` | LightCraft 0.7.1, full history | [storytold/lightcraft](https://github.com/storytold/lightcraft) via `jorgerjimenez/lightcraft_901220` |
+| `photocraft/` | PhotoCraft 0.8.0, full history | [storytold/photocraft](https://github.com/storytold/photocraft) via `jorgerjimenez/photocraft_901220` |
+| `Cargo.toml`, `Cargo.lock` | The one Cargo workspace both apps build from | |
+| `NOTES.md` | Where the work stands; read first in every session | |
 | `tools/baseline.ps1` | Time and peak RAM of both apps on your own files | |
 | `.github/workflows/windows.yml` | Windows build, tests and downloadable zips | |
 
-Both apps are still separate Cargo workspaces. They become one workspace in phase 1.
+Both apps build from one Cargo workspace at the repo root, each from its own folder:
+`cargo build --release -p lightcraft -p lightcraft-cli`, or the same with `photocraft`.
+`cargo xtask …` still works from inside each app's folder.
 
 ## Getting a build
 

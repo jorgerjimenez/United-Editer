@@ -1,7 +1,9 @@
-# Windows builds and tests for both imported apps (phase 0 baseline).
+# Windows builds and tests for both apps, which share one Cargo workspace at the repo root
+# since phase 1.
 #
 # `build` produces the downloadable zips (Actions run page → Artifacts). `test` runs each
-# workspace's own test suite on Windows. They are separate jobs so a slow or failing test run
+# app's own crates' tests on Windows, selected by folder, so each app's features resolve
+# exactly as they did when it was its own workspace. They are separate jobs so a slow or failing test run
 # never holds back a build Jorge can try on the laptop.
 name: Windows
 
@@ -46,16 +48,12 @@ jobs:
       fail-fast: false
       matrix:
         app: [lightcraft, photocraft]
-    defaults:
-      run:
-        working-directory: ${{ matrix.app }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ${{ matrix.app }}
-          key: build
+          key: build-${{ matrix.app }}
           cache-on-failure: true
       - name: Build app and CLI (release)
         shell: pwsh
@@ -70,7 +68,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.app }}-windows-x64
-          path: ${{ matrix.app }}/dist/${{ matrix.app }}
+          path: dist/${{ matrix.app }}
           if-no-files-found: error
           retention-days: 30
 
@@ -82,23 +80,24 @@ jobs:
       fail-fast: false
       matrix:
         app: [lightcraft, photocraft]
-    defaults:
-      run:
-        working-directory: ${{ matrix.app }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ${{ matrix.app }}
-          key: test
+          key: test-${{ matrix.app }}
           cache-on-failure: true
       # Failing tests are surfaced as one annotation (readable from the API and the run page)
       # and in the job summary; the full output is uploaded as an artifact.
       - name: Test workspace
         shell: pwsh
         run: |
-          cargo test --workspace --locked --no-fail-fast 2>&1 | Tee-Object -FilePath test-output.txt
+          # this app's packages: every workspace member whose manifest is under its folder
+          $meta = cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json
+          $dir = (Resolve-Path "${{ matrix.app }}").Path + [IO.Path]::DirectorySeparatorChar
+          $pkgs = $meta.packages | Where-Object { $_.manifest_path.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { "-p"; $_.name }
+          Write-Host "Testing $($pkgs.Count / 2) packages"
+          cargo test --locked --no-fail-fast @pkgs 2>&1 | Tee-Object -FilePath test-output.txt
           $code = $LASTEXITCODE
           $hits = Select-String -Path test-output.txt -Pattern '^test .+ \.\.\. FAILED$', 'panicked at', '^error(\[E\d+\])?:', '^test result: FAILED' |
             ForEach-Object { $_.Line.Trim() } | Select-Object -Unique -First 80
@@ -112,6 +111,6 @@ jobs:
         if: always()
         with:
           name: ${{ matrix.app }}-test-output
-          path: ${{ matrix.app }}/test-output.txt
+          path: test-output.txt
           if-no-files-found: ignore
           retention-days: 14
