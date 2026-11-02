@@ -17,7 +17,7 @@ D1–D16, risks, phases) lives in Jorge's "Unified editor — architecture decis
 render 0.95 s CPU / 2.1 s GPU (GPU number includes device start-up per process); full-size
 render 4.0 s CPU / 5.1 s GPU at about 1.9 GB peak; PhotoCraft opens a CR2 in 3.8 s / 0.9 GB.
 
-**Phase 1 (one workspace, cleanup), in progress** on `phase-1/one-workspace`:
+**Phase 1 (one workspace, cleanup), in progress** on `phase-1/workspace-clean` (PR #2):
 
 - [x] One Cargo workspace at the root; dependency versions and features unchanged per app
       (checked with `cargo tree`), except four patch-level bumps listed in the commit.
