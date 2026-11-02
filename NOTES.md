@@ -22,8 +22,10 @@ render 4.0 s CPU / 5.1 s GPU at about 1.9 GB peak; PhotoCraft opens a CR2 in 3.8
 - [x] One Cargo workspace at the root; dependency versions and features unchanged per app
       (checked with `cargo tree`), except four patch-level bumps listed in the commit.
 - [x] Windows CI builds and tests each app from the shared workspace.
-- [ ] Remove code made dead by Windows-only (D8): macOS-only crates and calls, non-Windows
-      packaging, CI and Nix/Docker files.
+- [x] Removed non-Windows packaging (macOS, Linux, FreeBSD), Nix and Docker files, and the
+      upstream workflows in each app folder (GitHub only runs the root ones).
+- [ ] Remaining D8 dead code, deferred to the cleanup Jorge postponed: macOS/Linux `cfg` code
+      paths in Rust, `lightcraft-sysmem` (a macOS memory call), the cut candidates.
 - [ ] Fix LightCraft's 21 Windows test failures (file moves, renames, XMP sidecar repair).
       Until then: don't move or rename photos with LightCraft.
 - [ ] Fix PhotoCraft's 4 Windows test failures.
