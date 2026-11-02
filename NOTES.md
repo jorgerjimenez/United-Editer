@@ -29,7 +29,8 @@ render 4.0 s CPU / 5.1 s GPU at about 1.9 GB peak; PhotoCraft opens a CR2 in 3.8
 - [ ] Fix LightCraft's 21 Windows test failures (file moves, renames, XMP sidecar repair).
       Until then: don't move or rename photos with LightCraft.
 - [ ] Fix PhotoCraft's 4 Windows test failures.
-- [ ] LightCraft can't read a 144 MB 16-bit TIFF ("decoder limits exceeded"); PhotoCraft can.
+- [x] LightCraft couldn't read a 144 MB 16-bit single-strip TIFF ("decoder limits exceeded"):
+      fixed, with a regression test of the same layout (4000 × 6000, RGB16, one strip).
 - Gate: one Windows CI run green; renders unchanged.
 
 **Waiting on Jorge:** confirm the cut candidates (both web apps, Affinity import; geocode and

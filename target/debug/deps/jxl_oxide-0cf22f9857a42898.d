@@ -1,0 +1,12 @@
+/home/claude/united-editer/target/debug/deps/jxl_oxide-0cf22f9857a42898.d: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/aux_box.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/aux_box/exif.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/aux_box/jbrd.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/fb.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/integration.rs
+
+/home/claude/united-editer/target/debug/deps/libjxl_oxide-0cf22f9857a42898.rlib: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/aux_box.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/aux_box/exif.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/aux_box/jbrd.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/fb.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/integration.rs
+
+/home/claude/united-editer/target/debug/deps/libjxl_oxide-0cf22f9857a42898.rmeta: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/aux_box.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/aux_box/exif.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/aux_box/jbrd.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/fb.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/integration.rs
+
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/lib.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/aux_box.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/aux_box/exif.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/aux_box/jbrd.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/fb.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/jxl-oxide-0.12.6/src/integration.rs:
