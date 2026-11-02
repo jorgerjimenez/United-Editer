@@ -31,7 +31,11 @@ render 4.0 s CPU / 5.1 s GPU at about 1.9 GB peak; PhotoCraft opens a CR2 in 3.8
 - [ ] Fix PhotoCraft's 4 Windows test failures.
 - [x] LightCraft couldn't read a 144 MB 16-bit single-strip TIFF ("decoder limits exceeded"):
       fixed, with a regression test of the same layout (4000 × 6000, RGB16, one strip).
-- Gate: one Windows CI run green; renders unchanged.
+- [x] Renders unchanged (2 Nov, on Jorge's laptop): old and new builds, same settings, gave
+      byte-identical output for all 5 CR2s, the PSD and the TIFF. Speed within run-to-run noise.
+      Note: with `LIGHTCRAFT_LENSFUN_DIR` set, LightCraft's CLI applies lens correction on its own
+      (about +15 % full-size CPU time); check in phase 2 when it should apply.
+- Gate: one Windows CI run green (renders part passed).
 
 **Waiting on Jorge:** confirm the cut candidates (both web apps, Affinity import; geocode and
 WASM plug-ins stay unless he says otherwise).
