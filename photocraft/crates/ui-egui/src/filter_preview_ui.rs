@@ -197,7 +197,41 @@ fn upload(ctx: &egui::Context, app: &PhotocraftApp, name: &str, doc: &Document) 
     let buf = photocraft_compose::flatten(doc);
     let (display, _) = crate::canvas::canvas_display(app, doc, None);
     let img = crate::canvas::display_image(display.as_deref(), &buf);
-    ctx.load_texture(name, img, egui::TextureOptions::LINEAR)
+    // egui aborts on a texture larger than the GPU allows (2048 px on some adapters), and a full-
+    // resolution preview of a big document can be larger. The view maps it with normalised UVs, so
+    // a reduced texture shows the same picture.
+    let max_side = ctx.input(|i| i.max_texture_side);
+    ctx.load_texture(name, fit_texture(img, max_side), egui::TextureOptions::LINEAR)
+}
+
+/// `img` box-filtered by a whole factor until neither side exceeds `max_side` (unchanged if it fits).
+fn fit_texture(img: egui::ColorImage, max_side: usize) -> egui::ColorImage {
+    let [w, h] = img.size;
+    if max_side == 0 || (w <= max_side && h <= max_side) {
+        return img;
+    }
+    let k = w.max(h).div_ceil(max_side);
+    let (nw, nh) = (w.div_ceil(k), h.div_ceil(k));
+    let mut pixels = Vec::with_capacity(nw * nh);
+    for y in 0..nh {
+        for x in 0..nw {
+            let (mut sum, mut n) = ([0u32; 4], 0u32);
+            for yy in y * k..((y + 1) * k).min(h) {
+                for xx in x * k..((x + 1) * k).min(w) {
+                    // Colour32 is premultiplied, so a plain average of its channels is correct.
+                    if let Some(p) = img.pixels.get(yy * w + xx) {
+                        for (s, c) in sum.iter_mut().zip(p.to_array()) {
+                            *s += u32::from(c);
+                        }
+                        n += 1;
+                    }
+                }
+            }
+            let avg = |s: u32| if n == 0 { 0 } else { u8::try_from(s / n).unwrap_or(u8::MAX) };
+            pixels.push(egui::Color32::from_rgba_premultiplied(avg(sum[0]), avg(sum[1]), avg(sum[2]), avg(sum[3])));
+        }
+    }
+    egui::ColorImage::new([nw, nh], pixels)
 }
 
 /// What a cached texture was built from, so it is rebuilt only when its source changes.
@@ -316,5 +350,37 @@ mod tests {
         egui::Context::default().run_ui(Default::default(), |ui| window(&app, id, ui, &mut f)).textures_delta.clear();
         assert_eq!(f.get(ZOOM_FIELD), Some(&json!(1.0)));
         assert_eq!(f.get(CENTER_Y_FIELD), Some(&json!(0.0)));
+    }
+}
+
+#[cfg(test)]
+mod fit_texture_tests {
+    use super::fit_texture;
+    use egui::{Color32, ColorImage};
+
+    #[test]
+    fn a_preview_larger_than_the_gpu_allows_is_reduced_to_fit() {
+        // 3000 x 2000 against a 2048 px limit: the size of the image the Windows test adapter refused.
+        let img = ColorImage::new([3000, 2000], vec![Color32::from_rgb(10, 200, 30); 3000 * 2000]);
+        let out = fit_texture(img, 2048);
+        assert_eq!(out.size, [1500, 1000]);
+        assert!(out.pixels.iter().all(|p| *p == Color32::from_rgb(10, 200, 30)), "a flat colour stays the same colour");
+    }
+
+    #[test]
+    fn a_preview_that_fits_is_left_alone() {
+        let img = ColorImage::new([2048, 10], vec![Color32::RED; 2048 * 10]);
+        assert_eq!(fit_texture(img.clone(), 2048), img);
+        assert_eq!(fit_texture(img.clone(), 0), img, "an unknown limit changes nothing");
+    }
+
+    #[test]
+    fn odd_sizes_average_partial_blocks() {
+        let mut pixels = vec![Color32::BLACK; 5 * 1];
+        pixels[4] = Color32::WHITE;
+        let out = fit_texture(ColorImage::new([5, 1], pixels), 2);
+        assert_eq!(out.size, [2, 1]);
+        assert_eq!(out.pixels[0], Color32::BLACK);
+        assert_eq!(out.pixels[1], Color32::from_rgba_premultiplied(127, 127, 127, 255), "black and white averaged");
     }
 }

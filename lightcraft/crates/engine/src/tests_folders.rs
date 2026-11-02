@@ -39,8 +39,10 @@ impl Scratch {
         std::fs::create_dir_all(&dir).unwrap();
         Scratch(dir)
     }
+    /// `rel` is written with `/`; the result uses the host's separator, as the paths the app
+    /// builds itself do (on Windows, `out/a.jpg` and `out\\a.jpg` are the same file but not the same text).
     fn path(&self, rel: &str) -> String {
-        self.0.join(rel).to_string_lossy().to_string()
+        rel.split('/').fold(self.0.clone(), |p, part| p.join(part)).to_string_lossy().to_string()
     }
 }
 

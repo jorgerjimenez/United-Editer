@@ -586,7 +586,7 @@ mod missing_font_warning_tests {
             &native_str,
         ]);
         assert_eq!(code, 0, "{stderr}");
-        assert_eq!(stderr.matches(family).count(), 1, "multi-command runs should not repeat the same missing font warning");
+        assert_eq!(stderr.matches(family).count(), 1, "multi-command runs should not repeat the same missing font warning:\n{stderr}");
         let commands: Vec<Value> = stdout.lines().map(|s| serde_json::from_str(s).unwrap()).collect();
         assert_eq!(commands.len(), 2, "{stdout}");
         assert!(commands[0]["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|s| s.contains(family))));
