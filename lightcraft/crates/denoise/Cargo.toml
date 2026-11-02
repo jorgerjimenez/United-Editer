@@ -1,6 +1,6 @@
 [package]
 name = "lightcraft-denoise"
-version.workspace = true
+version = "0.7.1"
 edition.workspace = true
 license.workspace = true
 description = "LightCraft AI denoise (L1): denoise-model manifests, Bayer packing, tiling and blending, the cache file, and pure-Rust CPU inference"
@@ -21,7 +21,7 @@ lightcraft-denoise-core = { workspace = true }
 faer = { package = "faer-core", version = "=0.17.1", default-features = false, features = ["std"], optional = true }
 lightcraft-raster = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 miniz_oxide = { workspace = true }

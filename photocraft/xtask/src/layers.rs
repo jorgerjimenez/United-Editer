@@ -229,7 +229,14 @@ pub fn check(crates: &[Crate]) -> Vec<Violation> {
 
 /// Build the model from `cargo metadata --format-version 1 --no-deps`.
 pub fn from_metadata(meta: &Value) -> Result<Vec<Crate>, String> {
-    let pkgs = meta["packages"].as_array().ok_or("metadata: no packages array")?;
+    // The workspace now holds both apps; layering is checked per app, so keep only the
+    // packages under this app's folder (packages without a manifest path are kept).
+    let pkgs: Vec<&Value> = meta["packages"]
+        .as_array()
+        .ok_or("metadata: no packages array")?
+        .iter()
+        .filter(|p| p["manifest_path"].as_str().is_none_or(|m| std::path::Path::new(m).starts_with(crate::root())))
+        .collect();
     let members: Vec<&str> = pkgs.iter().filter_map(|p| p["name"].as_str()).collect();
     let mut out = Vec::new();
     for p in pkgs {
@@ -373,7 +380,7 @@ mod tests {
 
     #[test]
     fn apps_and_xtask_exempt() {
-        for app in ["photocraft", "photocraft-cli", "photocraft-web", "xtask"] {
+        for app in ["photocraft", "photocraft-cli", "photocraft-web", "photocraft-xtask"] {
             assert!(check(&[c(app, &[("egui", Normal, false), ("photocraft-ui-egui", Normal, true)])]).is_empty());
         }
     }
