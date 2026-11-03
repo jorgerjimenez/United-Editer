@@ -301,6 +301,25 @@ fn sidecars(path: &str) -> Vec<(PathBuf, SidecarNaming, bool)> {
     v
 }
 
+/// The sidecars of `path` that are on disk, each once, spelled as the folder lists it. On a
+/// case-insensitive volume (Windows, a Samba share seen from Windows) `a.XMP` also opens `a.xmp`;
+/// moving that phantom spelling would queue one packet twice or change its case on rename.
+fn present_sidecars(fs: &dyn MoveFs, path: &str) -> Vec<(PathBuf, SidecarNaming, bool)> {
+    let found: Vec<_> = sidecars(path).into_iter().filter(|(p, _, _)| fs.is_file(p)).collect();
+    let alias = |p: &Path, q: &Path| p != q && folded_path(&p.to_string_lossy()) == folded_path(&q.to_string_lossy()) && fs.same_file(p, q);
+    let mut kept: Vec<(PathBuf, SidecarNaming, bool)> = Vec::new();
+    for (p, naming, upper) in &found {
+        let exact = fs.spelled_exactly(p);
+        // A phantom spelling gives way to the listed one; of two phantoms, the first stays.
+        let listed_alias = !exact && found.iter().any(|(q, _, _)| alias(p, q) && fs.spelled_exactly(q));
+        if listed_alias || kept.iter().any(|(q, _, _)| alias(p, q)) {
+            continue;
+        }
+        kept.push((p.clone(), *naming, *upper));
+    }
+    kept
+}
+
 /// The file-system primitives renaming uses. [`RealFs`] is the disk; tests substitute a model of
 /// a case-insensitive or case-sensitive volume (and inject failures).
 pub(crate) trait MoveFs {
@@ -311,6 +330,11 @@ pub(crate) trait MoveFs {
     /// volume). Decided by file identity, never by comparing names: on a case-sensitive volume
     /// they are two different photos. When in doubt: `false`.
     fn same_file(&self, a: &Path, b: &Path) -> bool;
+    /// The folder lists `p` with exactly this spelling (not merely another case of it).
+    fn spelled_exactly(&self, p: &Path) -> bool {
+        let _ = p;
+        true
+    }
     /// Rename `a` to `b`, failing (never replacing) when `b` exists.
     fn rename_no_replace(&self, a: &Path, b: &Path) -> std::io::Result<()>;
     /// Copy `a` to a new file `b` (an independent copy, never a link), failing when `b` exists.
@@ -348,6 +372,13 @@ pub(crate) struct RealFs;
 impl MoveFs for RealFs {
     fn exists(&self, p: &Path) -> bool {
         std::fs::symlink_metadata(p).is_ok()
+    }
+
+    fn spelled_exactly(&self, p: &Path) -> bool {
+        let (Some(dir), Some(name)) = (p.parent(), p.file_name()) else { return true };
+        // Unreadable folder: assume the spelling is real, as before this check existed.
+        let Ok(entries) = std::fs::read_dir(if dir.as_os_str().is_empty() { Path::new(".") } else { dir }) else { return true };
+        entries.flatten().any(|e| e.file_name() == name)
     }
 
     fn is_file(&self, p: &Path) -> bool {
@@ -714,7 +745,7 @@ pub(crate) fn move_file_with(fs: &dyn MoveFs, from: &str, to: &str) -> std::resu
         .collect();
     move_one(fs, f, t).map_err(|e| fail(format!("rename {from}: {e}")))?;
     let mut done: Vec<SidecarMove> = Vec::new();
-    let mut remaining = sidecars(from).into_iter().filter(|(sc, _, _)| fs.is_file(sc)).map(|(sc, naming, upper)| {
+    let mut remaining = present_sidecars(fs, from).into_iter().map(|(sc, naming, upper)| {
         let mut dst = crate::sidecar::sidecar_path(to, naming);
         if upper {
             dst = dst.with_extension("XMP");
@@ -1193,6 +1224,10 @@ pub(crate) mod tests {
     }
 
     impl MoveFs for FakeFs {
+        fn spelled_exactly(&self, p: &Path) -> bool {
+            let p = Self::norm(p);
+            self.files.borrow().iter().any(|(f, _)| f.replace('\\', "/") == p)
+        }
         fn packet_version(&self, path: &Path) -> std::io::Result<PacketVersion> {
             let i = self.idx(path).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no such packet"))?;
             self.files.borrow().get(i).map(|(_, bytes)| PacketVersion::of(bytes)).ok_or_else(|| std::io::Error::other("packet disappeared"))
