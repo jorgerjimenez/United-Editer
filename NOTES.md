@@ -26,18 +26,15 @@ render 4.0 s CPU / 5.1 s GPU at about 1.9 GB peak; PhotoCraft opens a CR2 in 3.8
       upstream workflows in each app folder (GitHub only runs the root ones).
 - [ ] Remaining D8 dead code, deferred to the cleanup Jorge postponed: macOS/Linux `cfg` code
       paths in Rust, `lightcraft-sysmem` (a macOS memory call), the cut candidates.
-- [ ] LightCraft Windows test failures: 21 → 14 after round 1. Round 3 (3 Nov) found the real
-      cause, not case-duplicate fixtures: on Windows, `RealFs::same_file` only recognised `a.xmp`
-      and `a.XMP` as one file when asked about the spelling *not* on disk, so a sidecar could be
-      queued twice for repair. Now symmetric (one file unless the folder lists both spellings, as
-      a case-sensitive Linux share can), with a Windows regression test. Three more were the test
-      model storing `\` paths; fixed in the model. No tests skipped. Until green: don't move or
+- [ ] LightCraft Windows test failures: 21 → 14 (round 1) → 3 (round 3) → 1 (round 4). Not
+      fixture problems: on case-insensitive volumes (Windows, and Jorge's Samba share seen from
+      Windows) `a.xmp` also opens `a.XMP`. Fixed: `RealFs::same_file` is symmetric; moves and
+      saves use the spelling the folder lists (`MoveFs::spelled_exactly`, `existing_sidecar`),
+      so a sidecar is never queued twice or silently re-cased. Round 5 targets the last one (a
+      save rewrote `Trip.XMP` as `Trip.xmp`). No tests skipped. Until green: don't move or
       rename photos with LightCraft.
-- [ ] PhotoCraft Windows test failures: 4 → 2 after round 1. Missing-font: round 2 missed that
-      `run <file>` printed the open-time warning outside the once-only set; fixed in round 3.
-      Rotation preview: the dialog covers the top of the rotated image on the CI runner (rows
-      312..690, expected 239..691); round 3 checks each edge against the rotation's geometry and
-      accepts a hidden edge only if a dialog covers it and the other edge is in place.
+- [x] PhotoCraft Windows test failures: 0 since round 3 (CLI warned twice on `run <file>`; the
+      rotation test now checks visible edges against the rotation geometry).
 - Risk for phase 3: Lightroom-imported paths keep Lightroom's `/` (`C:/Photos/a.CR2`) while the
       app writes `\`. Lookups that matter (re-import duplicates, rename collisions) already
       normalise; check with Jorge's imported catalog when the library is ported.
@@ -49,8 +46,10 @@ render 4.0 s CPU / 5.1 s GPU at about 1.9 GB peak; PhotoCraft opens a CR2 in 3.8
       (about +15 % full-size CPU time); check in phase 2 when it should apply.
 - Gate: one Windows CI run green (renders part passed).
 
-**Waiting on Jorge:** confirm the cut candidates (both web apps, Affinity import; geocode and
-WASM plug-ins stay unless he says otherwise).
+**Cut list approved (3 Nov), do on its own branch after phase 1 merges:** cut both web apps,
+the Affinity import (Jorge has no Affinity files) and the pen tablet crate (macOS/X11 only).
+Keep geocoding, WASM plug-ins (frozen) and both MCP servers. AI crates (faces, segmentation,
+model fetch): decide later.
 
 ## Logged for later phases
 

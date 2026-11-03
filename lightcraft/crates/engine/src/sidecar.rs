@@ -66,14 +66,24 @@ pub fn sidecar_path(original: &str, naming: SidecarNaming) -> PathBuf {
 /// accepting an upper-case `.XMP`).
 pub fn find_sidecar(original: &str, naming: SidecarNaming) -> Option<PathBuf> {
     let other = if naming == SidecarNaming::Stem { SidecarNaming::Full } else { SidecarNaming::Stem };
-    [naming, other]
+    let paths: Vec<PathBuf> = [naming, other]
         .into_iter()
         .flat_map(|n| {
             let p = sidecar_path(original, n);
             let upper = p.with_extension("XMP");
             [p, upper]
         })
-        .find(|p| p.is_file())
+        .collect();
+    existing_sidecar(&paths)
+}
+
+/// The first of `paths` that is on disk, spelled as its folder lists it. On a case-insensitive
+/// volume (Windows, a Samba share) `a.xmp` also opens `a.XMP`; writing through the wrong spelling
+/// would rename the user's packet. Falls back to the first path that opens at all.
+pub(crate) fn existing_sidecar(paths: &[PathBuf]) -> Option<PathBuf> {
+    use crate::rename::MoveFs;
+    let fs = crate::rename::RealFs;
+    paths.iter().find(|p| p.is_file() && fs.spelled_exactly(p)).or_else(|| paths.iter().find(|p| p.is_file())).cloned()
 }
 
 /// What a sidecar (or embedded XMP packet) says about a photo. `None` = not stated.
@@ -566,7 +576,7 @@ impl Session {
             .map_err(|e| EngineError::Other(format!("{}: unfinished XMP repair: {e}", preferred.display())))?;
         // Keep an existing packet's spelling/style so foreign properties survive this save and
         // subsequent Undo/Redo writes. Shared stems owned by another photo were excluded above.
-        let path = candidates.into_iter().find(|path| path.is_file()).unwrap_or(preferred);
+        let path = existing_sidecar(&candidates).unwrap_or(preferred);
         self.validate_sidecar_packets_for_paths(std::slice::from_ref(&path), &crate::rename::RealFs)?;
         let p = self.catalog.photo(id).ok_or(lightcraft_catalog::CatalogError::NoPhoto(id))?;
         let err = |e: std::io::Error| EngineError::Other(format!("{}: {e}", path.display()));
