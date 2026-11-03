@@ -1,6 +1,6 @@
 [package]
 name = "lightcraft-engine"
-version.workspace = true
+version = "0.7.1"
 edition.workspace = true
 license.workspace = true
 description = "LightCraft engine: session, command registry, history, render jobs, view-models (L4)"
@@ -31,7 +31,7 @@ lightcraft-merge = { workspace = true }
 lightcraft-geocode = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 thiserror = { workspace = true }
 log = { workspace = true }
 ab_glyph = { workspace = true }

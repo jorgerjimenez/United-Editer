@@ -718,8 +718,11 @@ fn export_as_with_several_artboards_selected_writes_one_file_each() {
     app.poll_file_dialog(&ctx, None);
     assert!(!app.ui.status_error, "{}", app.ui.status);
     assert_eq!(written.borrow().len(), 2);
-    assert_eq!(written.borrow()[0], "/out/boards.jpg");
-    assert!(written.borrow()[1].starts_with("/out/boards-2-") && written.borrow()[1].ends_with(".jpg"), "{:?}", written.borrow());
+    // The second file's name is joined to the chosen folder with the host's separator
+    // (`/out\\boards-2-…` on Windows); compare the spelling-independent form.
+    let written: Vec<String> = written.borrow().iter().map(|p| p.replace('\\', "/")).collect();
+    assert_eq!(written[0], "/out/boards.jpg");
+    assert!(written[1].starts_with("/out/boards-2-") && written[1].ends_with(".jpg"), "{written:?}");
     let mut got = sizes.borrow().iter().map(|(_, w, h)| (*w, *h)).collect::<Vec<_>>();
     got.sort_unstable();
     assert_eq!(got, [(10, 25), (20, 15)], "each board at its own size, scaled to 50 %");

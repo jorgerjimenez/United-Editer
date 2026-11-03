@@ -1,6 +1,6 @@
 [package]
 name = "lightcraft-meta"
-version.workspace = true
+version = "0.7.1"
 edition.workspace = true
 license.workspace = true
 description = "LightCraft metadata: EXIF, XMP, IPTC (L1)"
@@ -16,4 +16,4 @@ quick-xml = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }

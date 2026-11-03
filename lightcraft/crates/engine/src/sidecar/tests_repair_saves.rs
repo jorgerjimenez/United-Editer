@@ -4,6 +4,18 @@ use crate::rename::{MoveFs, RealFs};
 use lightcraft_catalog::{Op, Photo, Source};
 use serde_json::json;
 
+/// Whether `a` and `b` name the same file the way the host's file system sees it: on Windows
+/// `a.jpg.XMP` and `a.jpg.xmp`, or `/` and `\\`, are one file, so an injected fault for one
+/// spelling must hit the other too.
+fn same_file_name(a: &Path, b: &Path) -> bool {
+    if cfg!(windows) {
+        let fold = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
+        fold(a) == fold(b)
+    } else {
+        a == b
+    }
+}
+
 struct PartialRename {
     sidecar: PathBuf,
     photo: PathBuf,
@@ -18,15 +30,18 @@ impl MoveFs for PartialRename {
     fn same_file(&self, a: &Path, b: &Path) -> bool {
         RealFs.same_file(a, b)
     }
+    fn spelled_exactly(&self, path: &Path) -> bool {
+        RealFs.spelled_exactly(path)
+    }
     fn rename_no_replace(&self, a: &Path, b: &Path) -> std::io::Result<()> {
-        if a == self.sidecar || a == self.photo {
+        if same_file_name(a, &self.sidecar) || same_file_name(a, &self.photo) {
             Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "transient rename fault"))
         } else {
             RealFs.rename_no_replace(a, b)
         }
     }
     fn copy_no_replace(&self, a: &Path, b: &Path) -> std::io::Result<()> {
-        if a == self.sidecar {
+        if same_file_name(a, &self.sidecar) {
             Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "transient copy fault"))
         } else {
             RealFs.copy_no_replace(a, b)
@@ -151,7 +166,11 @@ fn autowrite_repairs_partial_rename_before_merging_foreign_xmp_across_library_sw
                     assert_eq!(parsed.title.as_deref(), Some("Final title"));
                     assert!(parsed.keywords.as_ref().unwrap().contains(&"café".to_string()));
                     if upper {
-                        assert!(!preferred.exists(), "merge uses the repaired uppercase packet");
+                        // Compare exact names: on a case-insensitive volume `preferred` opens the
+                        // uppercase packet, so `exists()` can't tell the two spellings apart.
+                        let name = preferred.file_name().unwrap();
+                        let listed = std::fs::read_dir(preferred.parent().unwrap()).unwrap().flatten().any(|e| e.file_name() == name);
+                        assert!(!listed, "merge uses the repaired uppercase packet");
                     }
                     for (step, title) in [("edit.undo", "Fresh title"), ("edit.redo", "Final title")] {
                         s.execute(step, &json!({})).unwrap();

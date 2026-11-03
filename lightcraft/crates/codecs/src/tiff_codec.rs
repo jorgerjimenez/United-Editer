@@ -95,6 +95,11 @@ pub(crate) fn decode(bytes: &[u8], opts: &DecodeOptions) -> Result<Decoded> {
 fn limits(opts: &DecodeOptions) -> Limits {
     let mut limits = Limits::default();
     limits.decoding_buffer_size = opts.max_pixels.saturating_mul(4 * 8).min(usize::MAX as u64) as usize;
+    // A strip or tile is read whole into an intermediate buffer before it's unpacked. The tiff
+    // crate caps that at 128 MiB by default, which refuses a 24 MP 16-bit RGB image stored as one
+    // uncompressed strip (144 MB, as Photoshop and Lightroom write them). One strip can't hold
+    // more than the whole image, so the decode limit above bounds it too.
+    limits.intermediate_buffer_size = limits.decoding_buffer_size;
     limits.ifd_value_size = 32 << 20;
     limits
 }

@@ -62,7 +62,7 @@ fn main() -> ExitCode {
         Some("i18n-coverage") => i18n_coverage::run(&root()),
         Some("perf") => perf::run(&root(), &rest),
         Some("scorecard") => scorecard::run(&root(), &rest),
-        Some("version") => version::run(&root(), &rest),
+        Some("version") => version::run(&workspace_root(), &rest),
         Some("ico") => ico::run(&rest),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
@@ -82,6 +82,13 @@ fn main() -> ExitCode {
 /// Workspace root (parent of the xtask crate).
 pub fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask has a parent dir").to_path_buf()
+}
+
+/// The Cargo workspace root: the repository root, one level above this app's folder
+/// (both apps share one workspace since phase 1).
+pub fn workspace_root() -> PathBuf {
+    let app = root();
+    app.parent().map(Path::to_path_buf).unwrap_or(app)
 }
 
 pub fn cargo() -> Command {

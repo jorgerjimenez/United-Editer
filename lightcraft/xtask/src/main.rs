@@ -44,7 +44,7 @@ fn main() -> ExitCode {
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
     let result = match args.first().map(String::as_str) {
         Some("ico") => ico::run(&rest),
-        Some("version") => version::run(&root(), &rest),
+        Some("version") => version::run(&workspace_root(), &rest),
         Some("layers") => cmd_layers(),
         Some("assets") => assets::run(&root()),
         Some("bench") => bench::run(&root(), &rest),
@@ -76,6 +76,13 @@ pub fn root() -> PathBuf {
     let dir = std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from).filter(|d| d.join("Cargo.toml").is_file());
     let dir = dir.unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
     dir.parent().expect("xtask has a parent dir").to_path_buf()
+}
+
+/// The Cargo workspace root: the repository root, one level above this app's folder
+/// (both apps share one workspace since phase 1).
+pub fn workspace_root() -> PathBuf {
+    let app = root();
+    app.parent().map(Path::to_path_buf).unwrap_or(app)
 }
 
 pub fn cargo() -> Command {

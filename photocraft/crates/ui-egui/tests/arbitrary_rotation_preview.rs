@@ -1,5 +1,8 @@
 //! #1436: a size-changing Arbitrary rotation preview must remain visible on the real GPU canvas.
 //! Synthetic blue pixels are measured outside the dialog, so its controls cannot pass the test.
+//! Where the dialog covers one edge of the rotated image (it does on smaller or differently scaled
+//! screens, such as the Windows CI runner), that edge is checked against the dialog instead, and the
+//! position is proven from the edge that can be seen.
 
 use egui_kittest::kittest::Queryable;
 use photocraft_ui_egui::PhotocraftApp;
@@ -59,6 +62,12 @@ fn angle(h: &mut Harness, id: u64, value: f64) {
 
 /// Count blue canvas pixels and their vertical extent, excluding every modal's actual rectangle.
 fn blue(h: &mut Harness, name: &str) -> (usize, u32, u32) {
+    let (count, top, bottom, _) = blue_with_modals(h, name);
+    (count, top, bottom)
+}
+
+/// [`blue`], plus the modal rectangles that were left out of the count.
+fn blue_with_modals(h: &mut Harness, name: &str) -> (usize, u32, u32, Vec<egui::Rect>) {
     h.run_steps(3);
     let rect = h.state().last_canvas_rect.shrink(3.0);
     let modals: Vec<_> =
@@ -82,7 +91,13 @@ fn blue(h: &mut Harness, name: &str) -> (usize, u32, u32) {
             }
         }
     }
-    (count, top, bottom)
+    (count, top, bottom, modals)
+}
+
+/// Whether row `y` of the canvas is hidden by a modal (checked across the canvas width, with a
+/// little slack for anti-aliased edges).
+fn row_hidden(modals: &[egui::Rect], y: f32) -> bool {
+    modals.iter().any(|r| y >= r.top() - 3.0 && y <= r.bottom() + 3.0)
 }
 
 #[test]
@@ -109,12 +124,29 @@ fn size_changing_rotation_preview_is_visible_and_preserves_the_panned_center() {
         h.get_by_label("Preview").click();
         h.run_steps(4);
         assert_eq!(h.state().ui.dialogs[0].fields["__preview"], true);
-        let (count, top, bottom) = blue(&mut h, &format!("{width}x{height}-{degrees}-on"));
+        let (count, top, bottom, modals) = blue_with_modals(&mut h, &format!("{width}x{height}-{degrees}-on"));
         assert!(count > 5_000, "{width}x{height}, {degrees}°, factor {factor}: rotated blue pixels disappeared ({count} remain)");
         let rect = photocraft_ui_egui::rulers::content_rect(h.state(), h.state().last_canvas_rect);
         let expected_y = rect.center().y + (height as f32 / 2.0 - center[1]) * zoom;
-        let actual_y = (top + bottom) as f32 / 2.0;
-        assert!((actual_y - expected_y).abs() < 3.0, "{degrees}°: preview moved the panned image center from {expected_y} to {actual_y}");
+        // The rotated image's height on screen, from the rotation itself.
+        let radians = (degrees as f32).to_radians();
+        let half = (width as f32 * radians.sin().abs() + height as f32 * radians.cos().abs()) * zoom / 2.0;
+        let (expected_top, expected_bottom) = (expected_y - half, expected_y + half);
+        let detail = format!(
+            "{width}x{height}, {degrees}°: expected blue rows {expected_top:.0}..{expected_bottom:.0} (center {expected_y}), got {top}..{bottom} ({count} px, canvas {rect:?}, dialogs {modals:?}, max texture side {})",
+            h.ctx.input(|i| i.max_texture_side)
+        );
+        // Each edge is either where the rotation puts it, or hidden by a dialog that the visible
+        // blue runs into. At least one edge must be visible, so the position is always proven.
+        let edge = |actual: u32, expected: f32| (actual as f32 - expected).abs() < 3.0;
+        let top_ok = edge(top, expected_top);
+        let bottom_ok = edge(bottom, expected_bottom);
+        let top_hidden = !top_ok && top as f32 > expected_top && row_hidden(&modals, expected_top) && row_hidden(&modals, top as f32 - 1.0);
+        let bottom_hidden =
+            !bottom_ok && (bottom as f32) < expected_bottom && row_hidden(&modals, expected_bottom) && row_hidden(&modals, bottom as f32 + 1.0);
+        assert!(top_ok || bottom_ok, "preview moved the panned image center: {detail}");
+        assert!(top_ok || top_hidden, "top edge is neither in place nor under a dialog: {detail}");
+        assert!(bottom_ok || bottom_hidden, "bottom edge is neither in place nor under a dialog: {detail}");
         h.get_by_label("Cancel").click();
         h.run_steps(4);
     }

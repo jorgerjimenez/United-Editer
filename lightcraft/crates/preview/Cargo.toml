@@ -1,6 +1,6 @@
 [package]
 name = "lightcraft-preview"
-version.workspace = true
+version = "0.7.1"
 edition.workspace = true
 license.workspace = true
 description = "LightCraft preview cache: content hashing, memory LRU, disk thumbnail cache, prioritized job pool (L3)"

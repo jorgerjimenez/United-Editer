@@ -4,6 +4,18 @@ use crate::rename::{MoveFs, RealFs};
 use lightcraft_catalog::{Op, Photo, Source};
 use serde_json::json;
 
+/// Whether `a` and `b` name the same file the way the host's file system sees it: on Windows
+/// `a.jpg.XMP` and `a.jpg.xmp`, or `/` and `\\`, are one file, so an injected fault for one
+/// spelling must hit the other too.
+fn same_file_name(a: &Path, b: &Path) -> bool {
+    if cfg!(windows) {
+        let fold = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
+        fold(a) == fold(b)
+    } else {
+        a == b
+    }
+}
+
 struct Faults(Vec<PathBuf>);
 impl MoveFs for Faults {
     fn exists(&self, p: &Path) -> bool {
@@ -15,8 +27,11 @@ impl MoveFs for Faults {
     fn same_file(&self, a: &Path, b: &Path) -> bool {
         RealFs.same_file(a, b)
     }
+    fn spelled_exactly(&self, p: &Path) -> bool {
+        RealFs.spelled_exactly(p)
+    }
     fn rename_no_replace(&self, a: &Path, b: &Path) -> std::io::Result<()> {
-        if self.0.iter().any(|p| p == a) {
+        if self.0.iter().any(|p| same_file_name(p, a)) {
             Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected provenance partial move"))
         } else {
             RealFs.rename_no_replace(a, b)
@@ -152,7 +167,8 @@ fn replaced_and_in_place_companions_block_save_autowrite_retry_and_file_history(
                     assert_eq!(std::fs::read(&held).unwrap(), original);
                     // Restoring the observed content resolves ownership and keeps the positive path.
                     std::fs::write(&f.companion, &original).unwrap();
-                    assert!(save(&mut f.s)["failed"].as_array().unwrap().is_empty());
+                    let saved = save(&mut f.s);
+                    assert!(saved["failed"].as_array().unwrap().is_empty(), "{saved}");
                     assert!(queued(&f.s).is_empty());
                     assert_eq!(std::fs::read(&f.target).unwrap(), source);
                     drop(f.s);
@@ -194,7 +210,8 @@ fn failed_redo_and_discarded_or_pruned_history_keep_companion_provenance() {
         assert_eq!(queued(&f.s), queue);
         assert_eq!(std::fs::read(&f.companion).unwrap(), foreign);
         std::fs::write(&f.companion, &original).unwrap();
-        assert!(save(&mut f.s)["failed"].as_array().unwrap().is_empty());
+        let saved = save(&mut f.s);
+        assert!(saved["failed"].as_array().unwrap().is_empty(), "{saved}");
         assert!(queued(&f.s).is_empty());
         drop(f.s);
         std::fs::remove_dir_all(f.dir).unwrap();
@@ -248,7 +265,8 @@ fn absent_peer_destinations_are_not_owned_and_retirement_records_only_completed_
     assert_eq!(std::fs::read(&upper).unwrap(), replaced);
     assert!(!future.exists());
     std::fs::write(&upper, &observed_upper).unwrap();
-    assert!(save(&mut f.s)["failed"].as_array().unwrap().is_empty());
+    let saved = save(&mut f.s);
+    assert!(saved["failed"].as_array().unwrap().is_empty(), "{saved}");
     assert!(queued(&f.s).is_empty());
     assert_eq!(std::fs::read(&upper).unwrap(), observed_upper);
     drop(f.s);
@@ -288,7 +306,8 @@ fn own_atomic_shared_packet_writes_advance_retained_versions_and_failures_do_not
     std::fs::write(&shared, &shared_written).unwrap();
     f.s.save_sidecar(PhotoId(2)).unwrap();
     std::fs::rename(&held, &f.source).unwrap();
-    assert!(save(&mut f.s)["failed"].as_array().unwrap().is_empty());
+    let saved = save(&mut f.s);
+    assert!(saved["failed"].as_array().unwrap().is_empty(), "{saved}");
     assert!(queued(&f.s).is_empty(), "own shared writes must not stale the retained repair");
     assert_eq!(std::fs::read(&shared).unwrap(), shared_written);
     drop(f.s);
@@ -313,7 +332,8 @@ fn replaced_copy_keeps_its_shared_original_and_repair_source_byte_identical() {
     assert_eq!(std::fs::read(&shared).unwrap(), shared_before);
     assert_eq!(std::fs::read(&f.source).unwrap(), source);
     std::fs::write(&f.companion, &original).unwrap();
-    assert!(save(&mut f.s)["failed"].as_array().unwrap().is_empty());
+    let saved = save(&mut f.s);
+    assert!(saved["failed"].as_array().unwrap().is_empty(), "{saved}");
     assert!(queued(&f.s).is_empty());
     assert_eq!(std::fs::read(&shared).unwrap(), shared_before);
     drop(f.s);
@@ -335,7 +355,8 @@ fn changed_separated_sources_are_not_moved_or_retired() {
         assert_eq!(std::fs::read(&f.companion).unwrap(), companion);
         assert!(!f.target.exists());
         std::fs::write(&f.source, &original).unwrap();
-        assert!(save(&mut f.s)["failed"].as_array().unwrap().is_empty());
+        let saved = save(&mut f.s);
+        assert!(saved["failed"].as_array().unwrap().is_empty(), "{saved}");
         assert!(queued(&f.s).is_empty());
         drop(f.s);
         std::fs::remove_dir_all(f.dir).unwrap();

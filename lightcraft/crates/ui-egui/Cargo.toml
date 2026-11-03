@@ -1,6 +1,6 @@
 [package]
 name = "lightcraft-ui-egui"
-version.workspace = true
+version = "0.7.1"
 edition.workspace = true
 rust-version = "1.95"
 license.workspace = true
@@ -23,7 +23,7 @@ lightcraft-engine = { workspace = true }
 lightcraft-preview = { workspace = true }
 egui = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 log = { workspace = true }
 
 [dev-dependencies]
@@ -34,5 +34,5 @@ lightcraft-faces = { workspace = true }
 lightcraft-merge = { workspace = true }
 
 [build-dependencies]
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 toml = "1"
