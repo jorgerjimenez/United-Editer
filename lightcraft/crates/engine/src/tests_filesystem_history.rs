@@ -523,7 +523,8 @@ fn merged_rename_failure_keeps_rolled_back_photo_identity() {
     assert_eq!(s.file_moves(&s.undo.last().unwrap().op), vec![(host("/p/d.jpg"), host("/p/b.jpg")), (host("/p/c.jpg"), host("/p/a.jpg"))]);
     // The second photo move sticks; the preceding d -> b move must roll back to d.
     *fs.fail.borrow_mut() = vec!["/p/c.xmp".into(), "/p/a.jpg".into()];
-    let error = file_history_step(&mut s, &fs, false).unwrap_err().to_string();
+    // The message names host paths; compare in the model's `/` spelling.
+    let error = file_history_step(&mut s, &fs, false).unwrap_err().to_string().replace('\\', "/");
     assert!(error.contains("rename /p/c.xmp: injected failure"), "{error}");
     assert!(error.contains("/p/c.jpg could not be moved back"), "{error}");
     let files = fs.listing();

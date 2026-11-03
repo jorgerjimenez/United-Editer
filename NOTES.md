@@ -26,15 +26,18 @@ render 4.0 s CPU / 5.1 s GPU at about 1.9 GB peak; PhotoCraft opens a CR2 in 3.8
       upstream workflows in each app folder (GitHub only runs the root ones).
 - [ ] Remaining D8 dead code, deferred to the cleanup Jorge postponed: macOS/Linux `cfg` code
       paths in Rust, `lightcraft-sysmem` (a macOS memory call), the cut candidates.
-- [ ] LightCraft Windows test failures: 21 → 14 after round 1 (PR #2 run, 2 Nov). The rest
-      are sidecar-repair tests whose fixtures create sidecars differing only in case (`a.xmp`
-      and `a.XMP`, `a.jpg.XMP`): one file on Windows, so the expectations can't hold there.
-      Next: per test, skip only the case-duplicate variants on Windows (`cfg!(windows)`).
-      Until fixed: don't move or rename photos with LightCraft.
-- [ ] PhotoCraft Windows test failures: 4 → 2 after round 1. Missing-font: the CLI printed the
-      warning twice (save repeated it) — real bug, fixed in round 2. Rotation preview: the test
-      ignores pixels under the dialog, which on the CI runner covers the top of the rotated
-      image (rows 312..690, expected 239..691); fix the measurement, not the app.
+- [ ] LightCraft Windows test failures: 21 → 14 after round 1. Round 3 (3 Nov) found the real
+      cause, not case-duplicate fixtures: on Windows, `RealFs::same_file` only recognised `a.xmp`
+      and `a.XMP` as one file when asked about the spelling *not* on disk, so a sidecar could be
+      queued twice for repair. Now symmetric (one file unless the folder lists both spellings, as
+      a case-sensitive Linux share can), with a Windows regression test. Three more were the test
+      model storing `\` paths; fixed in the model. No tests skipped. Until green: don't move or
+      rename photos with LightCraft.
+- [ ] PhotoCraft Windows test failures: 4 → 2 after round 1. Missing-font: round 2 missed that
+      `run <file>` printed the open-time warning outside the once-only set; fixed in round 3.
+      Rotation preview: the dialog covers the top of the rotated image on the CI runner (rows
+      312..690, expected 239..691); round 3 checks each edge against the rotation's geometry and
+      accepts a hidden edge only if a dialog covers it and the other edge is in place.
 - Risk for phase 3: Lightroom-imported paths keep Lightroom's `/` (`C:/Photos/a.CR2`) while the
       app writes `\`. Lookups that matter (re-import duplicates, rename collisions) already
       normalise; check with Jorge's imported catalog when the library is ported.

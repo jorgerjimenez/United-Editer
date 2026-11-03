@@ -366,15 +366,22 @@ impl MoveFs for RealFs {
         }
         #[cfg(not(unix))]
         {
-            // no stable file id in std here: `b` is `a` under another spelling when they look
-            // alike and the folder has no entry spelled exactly like `b` (on a case-sensitive
-            // folder holding both `IMG.JPG` and `img.jpg`, both entries are listed)
-            let (Some(dir), Some(name)) = (b.parent(), b.file_name()) else { return false };
+            // No stable file id in std here. Two spellings that both open and look alike are one
+            // file unless the folder lists both spellings as separate entries (a case-sensitive
+            // folder, e.g. a Linux share, can hold `IMG.JPG` and `img.jpg` side by side). The
+            // check is symmetric: it must not depend on which spelling the file was created with.
+            let (Some(dir), Some(name_a), Some(name_b)) = (b.parent(), a.file_name(), b.file_name()) else { return false };
             if a.parent() != Some(dir) || ma.len() != mb.len() || ma.modified().ok() != mb.modified().ok() {
                 return false;
             }
             let Ok(entries) = std::fs::read_dir(dir) else { return false };
-            !entries.flatten().any(|e| e.file_name() == name)
+            let (mut listed_a, mut listed_b) = (false, false);
+            for e in entries.flatten() {
+                let n = e.file_name();
+                listed_a |= n == name_a;
+                listed_b |= n == name_b;
+            }
+            !(listed_a && listed_b)
         }
     }
 
@@ -1171,7 +1178,11 @@ pub(crate) mod tests {
         }
         fn idx(&self, p: &Path) -> Option<usize> {
             let p = Self::norm(p);
-            self.files.borrow().iter().position(|(f, _)| if self.ci { folded_path(f) == folded_path(&p) } else { *f == p })
+            // Tests may add files spelled with the host's separator; compare on the model's `/`.
+            self.files.borrow().iter().position(|(f, _)| {
+                let f = f.replace('\\', "/");
+                if self.ci { folded_path(&f) == folded_path(&p) } else { f == p }
+            })
         }
         /// The listing: (exact path, contents), sorted.
         pub fn listing(&self) -> Vec<(String, String)> {
@@ -1332,6 +1343,25 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// Both spellings of one sidecar name the same file, whichever spelling it was created with
+    /// (the check used to answer only when asked about the spelling that isn't on disk).
+    #[cfg(windows)]
+    #[test]
+    fn same_file_is_symmetric_for_case_spellings_on_windows() {
+        let dir = std::env::temp_dir().join(format!("lc-same-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for on_disk in ["a.xmp", "a.XMP"] {
+            let _ = std::fs::remove_file(dir.join("a.xmp"));
+            std::fs::write(dir.join(on_disk), b"edits").unwrap();
+            let (lower, upper) = (dir.join("a.xmp"), dir.join("a.XMP"));
+            assert!(RealFs.same_file(&lower, &upper), "{on_disk}: a.xmp vs a.XMP");
+            assert!(RealFs.same_file(&upper, &lower), "{on_disk}: a.XMP vs a.xmp");
+            std::fs::write(dir.join("b.xmp"), b"edits").unwrap();
+            assert!(!RealFs.same_file(&lower, &dir.join("b.xmp")), "different names stay different files");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(windows)]
